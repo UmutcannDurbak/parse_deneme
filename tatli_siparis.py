@@ -22,12 +22,12 @@ except ImportError:
 
 # PyInstaller ile build ederken .ico dosyasını eklemeyi unutmayın!
 ICON_PATH = "appicon.ico"
-VERSION = "v1.2.1"
+VERSION = "v1.2.2"
 DEVELOPER = "Developed by U.D"
 
 # Güncelleme ayarları
-GITHUB_REPO = "UmutcannDurbak/parse_deneme.git"  # GitHub repository adınızı buraya yazın
-GITHUB_API_URL = f"https://github.com/{GITHUB_REPO}/releases/latest"
+GITHUB_REPO = "UmutcannDurbak/parse_deneme"  # GitHub repository (owner/repo)
+GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"  # GitHub API endpoint
 UPDATE_CHECK_INTERVAL = 24 * 60 * 60  # 24 saat (saniye cinsinden)
 
 def resource_path(relative_path):
