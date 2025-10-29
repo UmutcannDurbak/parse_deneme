@@ -1,0 +1,124 @@
+# Python# Python# Byte-compiled / optimized / DLL files
+
+__pycache__/
+
+*.py[cod]__pycache__/__pycache__/
+
+*$py.class
+
+*.py[cod]*.py[cod]
+
+# Distribution / packaging
+
+build/*$py.class*$py.class
+
+dist/
+
+*.egg-info/
+
+
+
+# PyInstaller# Distribution / packaging# Distribution / packaging
+
+*.spec
+
+build/build/
+
+# Data and Excel files
+
+*.csvdist/dist/
+
+*.xlsx
+
+*.xls*.egg-info/*.egg-info/
+
+
+
+# Executables*.egg
+
+*.exe
+
+# PyInstaller
+
+# Archives
+
+*.zip*.spec# Installer logs
+
+*.rar
+
+*.7zpip-log.txt
+
+
+
+# Environment# Data files
+
+venv/
+
+env/*.csv# PyInstaller
+
+.env
+
+*.xlsx*.spec
+
+# IDE
+
+.vscode/*.xlsdist/
+
+.idea/
+
+
+
+# Windows
+
+Thumbs.db# Executables# Executables
+
+Desktop.ini
+
+*.exe*.exe
+
+# Backup files
+
+*.bak
+
+*~
+# Archives# Archives and CSVs (do not upload raw data or builds)
+
+*.zip*.zip
+
+*.rar*.tar.gz
+
+*.7z*.csv
+
+
+
+# Build folders# OS files
+
+build/.DS_Store
+
+dist/Thumbs.db
+
+
+
+# Environment# IDEs
+
+.env.vscode/
+
+venv/.idea/
+
+env/
+
+# Local env
+
+# IDE.env
+
+.vscode/env/
+
+.idea/venv/
+
+
+
+# Windows# Other
+
+Thumbs.db*.pyc
+
+Desktop.ini
