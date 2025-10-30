@@ -29,6 +29,11 @@ DEVELOPER = "Developer U.D"
 GITHUB_REPO = "UmutcannDurbak/parse_deneme"  # GitHub repository (owner/repo)
 GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"  # GitHub API endpoint
 UPDATE_CHECK_INTERVAL = 24 * 60 * 60  # 24 saat (saniye cinsinden)
+# Eğer güncelleme bulunduğunda otomatik indirme başlatılsın mı? (False = kullanıcı "İndir" butonuna basmalı)
+AUTO_START_DOWNLOAD = False
+
+# Tercih edilen asset uzantı sıralaması — önce .exe, sonra .zip
+PREFERRED_ASSET_EXTENSIONS = ['.exe', '.zip']
 
 def resource_path(relative_path):
     import sys, os
@@ -48,6 +53,24 @@ def get_latest_version():
     except Exception as e:
         print(f"Güncelleme kontrolü hatası: {e}")
         return None, None
+
+
+def select_best_asset(assets: list):
+    """Verilen asset listesi içinden en uygun (tercih edilen uzantıya göre) asset'i döndürür.
+    Döndürür: asset dict veya None
+    """
+    if not assets:
+        return None
+    # normalize names
+    assets_sorted = list(assets)
+    # try preferred extensions in order
+    for ext in PREFERRED_ASSET_EXTENSIONS:
+        for a in assets_sorted:
+            name = (a.get('name') or '').lower()
+            if name.endswith(ext) or ext.strip('.') in name:
+                return a
+    # fallback: return first asset
+    return assets_sorted[0]
 
 def is_newer_version(latest_version, current_version):
     """Sürüm karşılaştırması yapar"""
@@ -407,11 +430,22 @@ def show_update_window():
                             data = response.json()
                             assets = data.get('assets', [])
                             if assets:
-                                download_url = assets[0]['browser_download_url']
-                                update_info["latest_version"] = latest_version
-                                update_info["download_url"] = download_url
-                                download_button.config(state=tk.NORMAL)
-                                log_message("✅ İndirme hazır!")
+                                best = select_best_asset(assets)
+                                if best is not None:
+                                    download_url = best.get('browser_download_url')
+                                    update_info["latest_version"] = latest_version
+                                    update_info["download_url"] = download_url
+                                    download_button.config(state=tk.NORMAL)
+                                    log_message(f"✅ İndirme hazır! (Seçilen: {best.get('name')})")
+                                    # Eğer otomatik indirme ayarlıysa indir butonunu tetikle
+                                    if AUTO_START_DOWNLOAD:
+                                        try:
+                                            # invoke the download action in the GUI thread
+                                            download_button.invoke()
+                                        except Exception:
+                                            pass
+                                else:
+                                    log_message("❌ İndirme dosyası bulunamadı!")
                             else:
                                 log_message("❌ İndirme dosyası bulunamadı!")
                         else:
