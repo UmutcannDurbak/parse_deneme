@@ -22,8 +22,8 @@ except ImportError:
 
 # PyInstaller ile build ederken .ico dosyasını eklemeyi unutmayın!
 ICON_PATH = "appicon.ico"
-VERSION = "v1.2.3"
-DEVELOPER = "Developed by U.D"
+VERSION = "v1.2.4"
+DEVELOPER = "Developer U.D"
 
 # Güncelleme ayarları
 GITHUB_REPO = "UmutcannDurbak/parse_deneme"  # GitHub repository (owner/repo)

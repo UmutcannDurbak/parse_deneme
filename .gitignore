@@ -22,7 +22,6 @@ dist/
 # Executables and installers
 *.exe
 *.msi
-*.bat
 
 # Archives
 *.zip
