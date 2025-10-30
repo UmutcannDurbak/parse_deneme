@@ -92,9 +92,9 @@ def install_update():
     """Güncellemeyi kurar"""
     try:
         # Mevcut uygulamayı yedekle
-        if os.path.exists('Tatlı Sipariş.exe'):
-            shutil.copy('Tatlı Sipariş.exe', 'Tatlı Sipariş_backup.exe')
-        
+        if os.path.exists('tatli_siparis.exe'):
+            shutil.copy('tatli_siparis.exe', 'tatli_siparis_backup.exe')
+
         # ZIP dosyasını aç
         with zipfile.ZipFile('update.zip', 'r') as zip_ref:
             zip_ref.extractall('.')
@@ -496,8 +496,8 @@ def show_update_window():
                     
                     # Yeni uygulamayı başlat
                     try:
-                        if os.path.exists('Tatlı Sipariş.exe'):
-                            os.startfile('Tatlı Sipariş.exe')
+                        if os.path.exists('tatli_siparis.exe'):
+                            os.startfile('tatli_siparis.exe')
                         # Mevcut uygulamayı kapat
                         update_window.quit()
                         sys.exit(0)
