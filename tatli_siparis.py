@@ -22,7 +22,7 @@ except ImportError:
 
 # PyInstaller ile build ederken .ico dosyasını eklemeyi unutmayın!
 ICON_PATH = "appicon.ico"
-VERSION = "v1.2.2"
+VERSION = "v1.2.3"
 DEVELOPER = "Developed by U.D"
 
 # Güncelleme ayarları
@@ -65,7 +65,7 @@ def is_newer_version(latest_version, current_version):
     except:
         return False
 
-def download_update(download_url, progress_callback=None):
+def download_github_update(download_url, progress_callback=None):
     """Güncellemeyi indirir"""
     try:
         response = requests.get(download_url, stream=True, timeout=30)
@@ -445,7 +445,7 @@ def show_update_window():
                     progress_var.set(progress)
                     update_window.update()
                 
-                success = download_update(update_info["download_url"], progress_callback)
+                success = download_github_update(update_info["download_url"], progress_callback)
                 
                 if success:
                     status_label.config(text="✅ İndirme tamamlandı", fg="green")
