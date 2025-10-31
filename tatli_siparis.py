@@ -114,18 +114,18 @@ def install_update():
             bat_path = os.path.join(tmpdir, 'updater.bat')
             current_dir = os.path.abspath('.')
             bat = f'''@echo off
-timeout /t 2 /nobreak >nul
-:waitloop
-tasklist /FI "IMAGENAME eq {exe_name}" | find /I "{exe_name}" >nul
-if %ERRORLEVEL%==0 (
-  timeout /t 1 /nobreak >nul
-  goto waitloop
-)
-copy /Y "{extracted_exe}" "{os.path.join(current_dir, exe_name)}" >nul
-start "" "{os.path.join(current_dir, exe_name)}"
-rmdir /S /Q "{tmpdir}"
-del "%~f0" /Q
-'''
+            timeout /t 2 /nobreak >nul
+            :waitloop
+            tasklist /FI "IMAGENAME eq {exe_name}" | find /I "{exe_name}" >nul
+            if %ERRORLEVEL%==0 (
+            timeout /t 1 /nobreak >nul
+            goto waitloop
+            )
+            copy /Y "{extracted_exe}" "{os.path.join(current_dir, exe_name)}" >nul
+            start "" "{os.path.join(current_dir, exe_name)}"
+            rmdir /S /Q "{tmpdir}"
+            del "%~f0" /Q
+            '''
             with open(bat_path, 'w', encoding='utf-8') as f:
                 f.write(bat)
             try:
@@ -602,21 +602,21 @@ def show_update_window():
                     current_dir = os.path.abspath('.')
                     # Build batch script that waits for the main exe to exit, copies new exe and restarts it
                     bat_contents = f"""@echo off
-REM Wait for the main exe to exit, then copy new exe and start it
-timeout /t 2 /nobreak >nul
-:waitloop
-tasklist /FI "IMAGENAME eq {exe_name}" | find /I "{exe_name}" >nul
-if %ERRORLEVEL%==0 (
-  timeout /t 1 /nobreak >nul
-  goto waitloop
-)
-echo Replacing exe...
-copy /Y "{extracted_exe}" "{os.path.join(current_dir, exe_name)}" >nul
-start "" "{os.path.join(current_dir, exe_name)}"
-REM cleanup
-rmdir /S /Q "{tmpdir}"
-del "%~f0" /Q
-"""
+                        REM Wait for the main exe to exit, then copy new exe and start it
+                        timeout /t 2 /nobreak >nul
+                        :waitloop
+                        tasklist /FI "IMAGENAME eq {exe_name}" | find /I "{exe_name}" >nul
+                        if %ERRORLEVEL%==0 (
+                        timeout /t 1 /nobreak >nul
+                        goto waitloop
+                        )
+                        echo Replacing exe...
+                        copy /Y "{extracted_exe}" "{os.path.join(current_dir, exe_name)}" >nul
+                        start "" "{os.path.join(current_dir, exe_name)}"
+                        REM cleanup
+                        rmdir /S /Q "{tmpdir}"
+                        del "%~f0" /Q
+                        """
 
                     with open(bat_path, 'w', encoding='utf-8') as f:
                         f.write(bat_contents)
