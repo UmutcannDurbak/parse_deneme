@@ -30,7 +30,7 @@ except ImportError:
 
 # PyInstaller ile build ederken .ico dosyasını eklemeyi unutmayın!
 ICON_PATH = "appicon.ico"
-VERSION = "v1.2.5"
+VERSION = "v1.2.7"
 DEVELOPER = "Developer U.D"
 
 # Güncelleme ayarları
@@ -95,65 +95,68 @@ def download_github_update(download_url, progress_callback=None):
 def install_update():
     """Install update from update.zip.
     If running as a frozen exe, extracts to temp and launches a batch updater to replace the running exe.
-    Otherwise extracts into current directory.
+    Otherwise extracts only tatli_siparis.exe into current directory.
     Returns True on success (or when updater was launched).
     """
     try:
         frozen = getattr(sys, 'frozen', False) or hasattr(sys, '_MEIPASS')
-        if frozen:
-            import tempfile
-            tmpdir = tempfile.mkdtemp()
-            with zipfile.ZipFile('update.zip', 'r') as z:
-                z.extractall(tmpdir)
-            exe_name = 'tatli_siparis.exe'
-            extracted_exe = os.path.join(tmpdir, exe_name)
-            if not os.path.exists(extracted_exe):
-                print('Kurulum hatası: exe bulunamadı in zip')
-                return False
-
-            bat_path = os.path.join(tmpdir, 'updater.bat')
-            current_dir = os.path.abspath('.')
-            bat = f'''@echo off
-            timeout /t 2 /nobreak >nul
-            :waitloop
-            tasklist /FI "IMAGENAME eq {exe_name}" | find /I "{exe_name}" >nul
-            if %ERRORLEVEL%==0 (
-            timeout /t 1 /nobreak >nul
-            goto waitloop
-            )
-            copy /Y "{extracted_exe}" "{os.path.join(current_dir, exe_name)}" >nul
-            start "" "{os.path.join(current_dir, exe_name)}"
-            rmdir /S /Q "{tmpdir}"
-            del "%~f0" /Q
-            '''
-            with open(bat_path, 'w', encoding='utf-8') as f:
-                f.write(bat)
-            try:
-                subprocess.Popen(['cmd', '/c', 'start', '/min', bat_path], shell=False)
-            except Exception as e:
-                print(f'Updater başlatılamadı: {e}')
-                return False
-            try:
-                os.remove('update.zip')
-            except:
-                pass
-            return True
-
-        # non-frozen
-        if os.path.exists('tatli_siparis.exe'):
-            shutil.copy('tatli_siparis.exe', 'tatli_siparis_backup.exe')
+        exe_name = 'tatli_siparis.exe'
+        
         with zipfile.ZipFile('update.zip', 'r') as z:
-            z.extractall('.')
+            # Check if update.zip has the exe
+            if exe_name not in z.namelist():
+                print('Kurulum hatası: ZIP içinde exe bulunamadı')
+                return False
+            
+            if frozen:
+                import tempfile
+                tmpdir = tempfile.mkdtemp()
+                # Only extract the exe file
+                z.extract(exe_name, tmpdir)
+                extracted_exe = os.path.join(tmpdir, exe_name)
+                
+                # Create batch updater
+                bat_path = os.path.join(tmpdir, 'updater.bat')
+                current_dir = os.path.abspath('.')
+                bat = f'''@echo off
+timeout /t 2 /nobreak >nul
+:waitloop
+tasklist /FI "IMAGENAME eq {exe_name}" | find /I "{exe_name}" >nul
+if %ERRORLEVEL%==0 (
+  timeout /t 1 /nobreak >nul
+  goto waitloop
+)
+copy /Y "{extracted_exe}" "{os.path.join(current_dir, exe_name)}" >nul
+start "" "{os.path.join(current_dir, exe_name)}"
+rmdir /S /Q "{tmpdir}"
+del "%~f0" /Q
+'''
+                with open(bat_path, 'w', encoding='utf-8') as f:
+                    f.write(bat)
+                try:
+                    subprocess.Popen(['cmd', '/c', 'start', '/min', bat_path], shell=False)
+                except Exception as e:
+                    print(f'Updater başlatılamadı: {e}')
+                    return False
+
+            else:
+                # Non-frozen: backup existing exe and extract only the new exe
+                if os.path.exists(exe_name):
+                    shutil.copy(exe_name, f'{exe_name}.backup')
+                # Extract only the exe file
+                z.extract(exe_name)
+
+        # Clean up the update zip
         try:
             os.remove('update.zip')
         except:
             pass
+            
         return True
+
     except Exception as e:
         print(f"Kurulum hatası: {e}")
         return False
-
-
 def check_for_updates(silent=False):
     """Background check for updates. If AUTO_START_DOWNLOAD is True, will auto-download and install.
     Returns True if an update was applied/launched, False otherwise.
