@@ -10,6 +10,14 @@ import json
 import zipfile
 import shutil
 from pathlib import Path
+import subprocess
+from copy import copy
+import sys
+import requests  # pyright: ignore[reportMissingModuleSource]
+import json
+import zipfile
+import shutil
+from pathlib import Path
 
 DATA_START_ROW = 3  # Verilerin başladığı satır (1-indexed)
 
@@ -30,7 +38,13 @@ GITHUB_REPO = "UmutcannDurbak/parse_deneme"  # GitHub repository (owner/repo)
 GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"  # GitHub API endpoint
 UPDATE_CHECK_INTERVAL = 24 * 60 * 60  # 24 saat (saniye cinsinden)
 # Eğer güncelleme bulunduğunda otomatik indirme başlatılsın mı? (False = kullanıcı "İndir" butonuna basmalı)
-AUTO_START_DOWNLOAD = False
+# Otomatik indirmenin varsayılan davranışı: eğer uygulama PyInstaller ile paketlenmişse otomatik indir
+"""AUTO_START_DOWNLOAD:
+If True, the app will automatically start downloading an available update when it detects a newer release.
+We enable this for testing/automation so the app immediately downloads the selected asset.
+In production, you may prefer to enable this only when running a packaged exe (frozen).
+"""
+AUTO_START_DOWNLOAD = True
 
 # Tercih edilen asset uzantı sıralaması — önce .exe, sonra .zip
 PREFERRED_ASSET_EXTENSIONS = ['.exe', '.zip']
@@ -54,6 +68,122 @@ def get_latest_version():
         print(f"Güncelleme kontrolü hatası: {e}")
         return None, None
 
+def download_github_update(download_url, progress_callback=None):
+    """Stream-download a GitHub asset to 'update.zip'. Returns True on success."""
+    try:
+        resp = requests.get(download_url, stream=True, timeout=60)
+        resp.raise_for_status()
+        total = int(resp.headers.get('content-length', 0) or 0)
+        downloaded = 0
+        with open('update.zip', 'wb') as fh:
+            for chunk in resp.iter_content(chunk_size=8192):
+                if not chunk:
+                    continue
+                fh.write(chunk)
+                downloaded += len(chunk)
+                if progress_callback and total:
+                    try:
+                        progress_callback((downloaded / total) * 100)
+                    except Exception:
+                        pass
+        return True
+    except Exception as e:
+        print(f"İndirme hatası: {e}")
+        return False
+
+
+def install_update():
+    """Install update from update.zip.
+    If running as a frozen exe, extracts to temp and launches a batch updater to replace the running exe.
+    Otherwise extracts into current directory.
+    Returns True on success (or when updater was launched).
+    """
+    try:
+        frozen = getattr(sys, 'frozen', False) or hasattr(sys, '_MEIPASS')
+        if frozen:
+            import tempfile
+            tmpdir = tempfile.mkdtemp()
+            with zipfile.ZipFile('update.zip', 'r') as z:
+                z.extractall(tmpdir)
+            exe_name = 'tatli_siparis.exe'
+            extracted_exe = os.path.join(tmpdir, exe_name)
+            if not os.path.exists(extracted_exe):
+                print('Kurulum hatası: exe bulunamadı in zip')
+                return False
+
+            bat_path = os.path.join(tmpdir, 'updater.bat')
+            current_dir = os.path.abspath('.')
+            bat = f'''@echo off
+timeout /t 2 /nobreak >nul
+:waitloop
+tasklist /FI "IMAGENAME eq {exe_name}" | find /I "{exe_name}" >nul
+if %ERRORLEVEL%==0 (
+  timeout /t 1 /nobreak >nul
+  goto waitloop
+)
+copy /Y "{extracted_exe}" "{os.path.join(current_dir, exe_name)}" >nul
+start "" "{os.path.join(current_dir, exe_name)}"
+rmdir /S /Q "{tmpdir}"
+del "%~f0" /Q
+'''
+            with open(bat_path, 'w', encoding='utf-8') as f:
+                f.write(bat)
+            try:
+                subprocess.Popen(['cmd', '/c', 'start', '/min', bat_path], shell=False)
+            except Exception as e:
+                print(f'Updater başlatılamadı: {e}')
+                return False
+            try:
+                os.remove('update.zip')
+            except:
+                pass
+            return True
+
+        # non-frozen
+        if os.path.exists('tatli_siparis.exe'):
+            shutil.copy('tatli_siparis.exe', 'tatli_siparis_backup.exe')
+        with zipfile.ZipFile('update.zip', 'r') as z:
+            z.extractall('.')
+        try:
+            os.remove('update.zip')
+        except:
+            pass
+        return True
+    except Exception as e:
+        print(f"Kurulum hatası: {e}")
+        return False
+
+
+def check_for_updates(silent=False):
+    """Background check for updates. If AUTO_START_DOWNLOAD is True, will auto-download and install.
+    Returns True if an update was applied/launched, False otherwise.
+    """
+    try:
+        latest_version, _ = get_latest_version()
+        if not latest_version:
+            return False
+        if not is_newer_version(latest_version, VERSION):
+            return False
+        # fetch release details
+        r = requests.get(GITHUB_API_URL, timeout=10)
+        if r.status_code != 200:
+            return False
+        data = r.json()
+        assets = data.get('assets', [])
+        best = select_best_asset(assets)
+        if not best:
+            return False
+        dl = best.get('browser_download_url')
+        if not dl:
+            return False
+        if silent and not AUTO_START_DOWNLOAD:
+            return False
+        ok = download_github_update(dl)
+        if not ok:
+            return False
+        return install_update()
+    except Exception:
+        return False
 
 def select_best_asset(assets: list):
     """Verilen asset listesi içinden en uygun (tercih edilen uzantıya göre) asset'i döndürür.
@@ -72,86 +202,16 @@ def select_best_asset(assets: list):
     # fallback: return first asset
     return assets_sorted[0]
 
+
 def is_newer_version(latest_version, current_version):
-    """Sürüm karşılaştırması yapar"""
+    """Basit semantik versiyon karşılaştırması. 'v' önekini kaldırır ve noktalı int'leri karşılaştırır."""
     try:
-        # v1.2.1 -> 1.2.1 formatına çevir
-        latest = latest_version.lstrip('v').split('.')
-        current = current_version.lstrip('v').split('.')
-        
-        # Eksik kısımları 0 ile doldur
-        max_len = max(len(latest), len(current))
-        latest = [int(x) for x in latest] + [0] * (max_len - len(latest))
-        current = [int(x) for x in current] + [0] * (max_len - len(current))
-        
-        return latest > current
-    except:
-        return False
-
-def download_github_update(download_url, progress_callback=None):
-    """Güncellemeyi indirir"""
-    try:
-        response = requests.get(download_url, stream=True, timeout=30)
-        response.raise_for_status()
-        
-        total_size = int(response.headers.get('content-length', 0))
-        downloaded = 0
-        
-        with open('update.zip', 'wb') as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                if chunk:
-                    f.write(chunk)
-                    downloaded += len(chunk)
-                    if progress_callback and total_size > 0:
-                        progress = (downloaded / total_size) * 100
-                        progress_callback(progress)
-        
-        return True
-    except Exception as e:
-        print(f"İndirme hatası: {e}")
-        return False
-
-def install_update():
-    """Güncellemeyi kurar"""
-    try:
-        # Mevcut uygulamayı yedekle
-        if os.path.exists('tatli_siparis.exe'):
-            shutil.copy('tatli_siparis.exe', 'tatli_siparis_backup.exe')
-
-        # ZIP dosyasını aç
-        with zipfile.ZipFile('update.zip', 'r') as zip_ref:
-            zip_ref.extractall('.')
-        
-        # Geçici dosyaları temizle
-        os.remove('update.zip')
-        
-        return True
-    except Exception as e:
-        print(f"Kurulum hatası: {e}")
-        return False
-
-def check_for_updates(silent=False):
-    """Güncelleme kontrolü yapar"""
-    latest_version, release_url = get_latest_version()
-    
-    if not latest_version:
-        if not silent:
-            messagebox.showerror("Hata", "Güncelleme kontrolü yapılamadı. İnternet bağlantınızı kontrol edin.")
-        return False
-    
-    if is_newer_version(latest_version, VERSION):
-        if not silent:
-            result = messagebox.askyesno(
-                "Güncelleme Mevcut", 
-                f"Yeni sürüm mevcut!\n\nMevcut: {VERSION}\nYeni: {latest_version}\n\nGüncellemeyi indirmek istiyor musunuz?"
-            )
-            if result:
-                return latest_version, release_url
-        else:
-            return latest_version, release_url
-    else:
-        if not silent:
-            messagebox.showinfo("Güncelleme", "Uygulamanız güncel!")
+        def to_tuple(v):
+            v = str(v).lstrip('vV')
+            parts = [int(p) for p in v.split('.') if p.isdigit() or p.isnumeric()]
+            return tuple(parts)
+        return to_tuple(latest_version) > to_tuple(current_version)
+    except Exception:
         return False
 
 # Yeni OOP koordinatör (eski fonksiyonlar geriye dönük uyum için içeride kullanılacak)
@@ -440,10 +500,11 @@ def show_update_window():
                                     # Eğer otomatik indirme ayarlıysa indir butonunu tetikle
                                     if AUTO_START_DOWNLOAD:
                                         try:
-                                            # invoke the download action in the GUI thread
-                                            download_button.invoke()
+                                            # Güvenli GUI çağrısı: ana iş parçacığında invoke et
+                                            update_window.after(0, download_button.invoke)
+                                            log_message("🔁 Otomatik indirme başlatıldı...")
                                         except Exception:
-                                            pass
+                                            log_message("❗ Otomatik indirme başlatılamadı; lütfen 'İndir' butonuna basın.")
                                 else:
                                     log_message("❌ İndirme dosyası bulunamadı!")
                             else:
@@ -518,36 +579,76 @@ def show_update_window():
         def install_thread():
             try:
                 success = install_update()
-                
-                if success:
-                    status_label.config(text="✅ Kurulum tamamlandı", fg="green")
-                    log_message("✅ Kurulum tamamlandı!")
-                    log_message("🔄 Uygulama yeniden başlatılacak...")
-                    
-                    # 3 saniye bekle ve yeniden başlat
-                    import time
-                    time.sleep(3)
-                    
-                    # Yeni uygulamayı başlat
+                # Eğer uygulama PyInstaller ile paketlenmiş/frozen ise,
+                # güvenli bir şekilde exe'yi değiştirmek için bir batch updater kullanıyoruz.
+                frozen = getattr(sys, 'frozen', False) or hasattr(sys, '_MEIPASS')
+
+                if frozen:
+                    import tempfile
+                    tmpdir = tempfile.mkdtemp()
+                    with zipfile.ZipFile('update.zip', 'r') as zip_ref:
+                        zip_ref.extractall(tmpdir)
+
+                    # Hedef exe adı
+                    exe_name = 'tatli_siparis.exe'
+                    extracted_exe = os.path.join(tmpdir, exe_name)
+                    if not os.path.exists(extracted_exe):
+                        print('Kurulum hatası: ZIP içinde exe bulunamadı.')
+                        return False
+
+                    # Batch script oluştur ve çalıştır: uygulama kapanmasını bekleyip exe'yi kopyalayıp başlatır
+                    bat_path = os.path.join(tmpdir, 'updater.bat')
+                    # Use double quotes for paths
+                    current_dir = os.path.abspath('.')
+                    # Build batch script that waits for the main exe to exit, copies new exe and restarts it
+                    bat_contents = f"""@echo off
+REM Wait for the main exe to exit, then copy new exe and start it
+timeout /t 2 /nobreak >nul
+:waitloop
+tasklist /FI "IMAGENAME eq {exe_name}" | find /I "{exe_name}" >nul
+if %ERRORLEVEL%==0 (
+  timeout /t 1 /nobreak >nul
+  goto waitloop
+)
+echo Replacing exe...
+copy /Y "{extracted_exe}" "{os.path.join(current_dir, exe_name)}" >nul
+start "" "{os.path.join(current_dir, exe_name)}"
+REM cleanup
+rmdir /S /Q "{tmpdir}"
+del "%~f0" /Q
+"""
+
+                    with open(bat_path, 'w', encoding='utf-8') as f:
+                        f.write(bat_contents)
+
+                    # Launch the updater batch and exit
                     try:
-                        if os.path.exists('tatli_siparis.exe'):
-                            os.startfile('tatli_siparis.exe')
-                        # Mevcut uygulamayı kapat
-                        update_window.quit()
-                        sys.exit(0)
+                        # Use start to run in separate process
+                        subprocess.Popen(['cmd', '/c', 'start', '/min', bat_path], shell=False)
+                    except Exception as e:
+                        print(f'Updater başlatılamadı: {e}')
+                        return False
+
+                    # Temizle: ZIP'i sil (bizim kopyamız)
+                    try:
+                        os.remove('update.zip')
                     except:
                         pass
-                else:
-                    status_label.config(text="❌ Kurulum hatası", fg="red")
-                    log_message("❌ Kurulum başarısız!")
-                
+
+                    status_label.config(text="✅ Kurulum başlatıldı", fg="green")
+                    log_message("✅ Kurulum işlemi başlatıldı. Uygulama yeniden başlatılacak.")
+                    install_button.config(state=tk.NORMAL)
+                    return
+
+                # Non-frozen case: install_update() should have handled extraction
+                status_label.config(text="✅ Kurulum tamamlandı", fg="green")
+                log_message("✅ Kurulum tamamlandı.")
                 install_button.config(state=tk.NORMAL)
-                
             except Exception as e:
                 status_label.config(text="❌ Kurulum hatası", fg="red")
                 log_message(f"❌ Hata: {e}")
                 install_button.config(state=tk.NORMAL)
-        
+
         threading.Thread(target=install_thread, daemon=True).start()
     
     def close_window():
