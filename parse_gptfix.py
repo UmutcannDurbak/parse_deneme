@@ -26,10 +26,6 @@ def normalize_text(s) -> str:
     if s is None or (isinstance(s, float) and pd.isna(s)):
         return ""
     s = str(s)
-    try:
-        s = unicodedata.normalize("NFKD", s)
-    except Exception:
-        pass
     tr = str.maketrans({
         "ı": "i", "ğ": "g", "ş": "s", "ö": "o", "ç": "c", "ü": "u",
         "İ": "I", "Ğ": "G", "Ş": "S", "Ö": "O", "Ç": "C", "Ü": "U",
@@ -251,25 +247,165 @@ def find_size_columns(ws: openpyxl.worksheet.worksheet.Worksheet, min_c: int, ma
     return sizes
 
 
-def locate_dondurmalar_block(ws: openpyxl.worksheet.worksheet.Worksheet, min_c: int, max_c: int) -> Tuple[int, Dict[str, int]]:
+def locate_dondurmalar_block(ws: openpyxl.worksheet.worksheet.Worksheet, min_c: int, max_c: int, debug: bool = False) -> Tuple[int, Dict[str, int]]:
     """Find the 'DONDURMALAR' header row and the size columns on that row within (min_c..max_c, plus small right margin).
-    Returns: (header_row_index, size_columns dict with keys '35KG','350GR','150GR').
+    Returns: (header_row_index, size_columns dict with keys '35KG','350GR','150GR', and 'MONO','KUCUK','BUYUK').
     """
     header_row = None
+    pasta_cols = {"MONO": None, "KUCUK": None, "BUYUK": None}
+    all_pasta_rows = []  # Pasta başlıkları için tüm satırları tut
+
     for r in range(1, min(ws.max_row, 100) + 1):
         v = ws.cell(row=r, column=1).value
         if not v:
             continue
         up = normalize_text(v)
+        if debug:
+            print(f"[DEBUG] Checking row {r} for DONDURMALAR: '{v}' -> '{up}'")
         if "DONDURMALAR" in up:
+            if debug:
+                print(f"[DEBUG] Found DONDURMALAR header at row {r}")
             header_row = r
+            if ("PASTA" in up or "KROKAN" in up or "ORMAN" in up or "GANAJ" in up or "ANANAS" in up or "FISTIK" in up):
+                all_pasta_rows.append(r)
+                if debug:
+                    print(f"[DEBUG] Found potential pasta row at {r}: '{v}'")
+
+        if all_pasta_rows:
+            # En üstteki pasta satırı
+            first_pasta_row = min(all_pasta_rows)
+            # Bu satırdan önceki 2 satırı kontrol et - MONO/KÜÇÜK/BÜYÜK başlıkları burada olmalı
+            for r in range(max(1, first_pasta_row - 2), first_pasta_row + 1):
+                for c in range(min_c, max_c + 1):
+                    v = ws.cell(row=r, column=c).value
+                    if not v:
+                        continue
+                    up = normalize_text(v)
+                    if debug:
+                        print(f"[DEBUG] Checking potential pasta header cell r={r} c={c}: '{v}' -> '{up}'")
+                    # Daha esnek başlık eşleştirme
+                    if "MONO" in up or "TEK" in up or "36" in up:
+                        pasta_cols["MONO"] = c
+                        if debug:
+                            print(f"[DEBUG] Found MONO pasta column at r={r} c={c}")
+                    elif ("KUCUK" in up or "KÜÇÜK" in up):
+                        pasta_cols["KUCUK"] = c
+                        if debug:
+                            print(f"[DEBUG] Found KUCUK pasta column at r={r} c={c}")
+                    elif ("BUYUK" in up or "BÜYÜK" in up):
+                        pasta_cols["BUYUK"] = c
+                        if debug:
+                            print(f"[DEBUG] Found BUYUK pasta column at r={r} c={c}")
+            # Pasta kolonları için özel kontrol: header row ve önceki 3 satır
+            pasta_cols = {"MONO": None, "KUCUK": None, "BUYUK": None}
+            check_rows = list(range(max(1, header_row - 3), header_row + 1))
+            if debug:
+                print(f"[DEBUG] Checking rows {check_rows} for pasta columns in cols {min_c}-{max_c}")
+            for rr in check_rows:
+                for c in range(min_c, max_c + 1):
+                    v = ws.cell(row=rr, column=c).value
+                    if not v:
+                        continue
+                    up = normalize_text(v)
+                    if debug:
+                        print(f"[DEBUG] Checking cell r={rr} c={c}: '{v}' -> '{up}'")
+                    if ("MONO" in up or "TEK" in up) and "PASTA" in up:
+                        pasta_cols["MONO"] = c
+                        if debug:
+                            print(f"[DEBUG] Found MONO pasta column at r={rr} c={c}")
+                    elif ("KUCUK" in up or "KÜÇÜK" in up) and "PASTA" in up:
+                        pasta_cols["KUCUK"] = c
+                        if debug:
+                            print(f"[DEBUG] Found KUCUK pasta column at r={rr} c={c}")
+                    elif ("BUYUK" in up or "BÜYÜK" in up) and "PASTA" in up:
+                        pasta_cols["BUYUK"] = c
+                        if debug:
+                            print(f"[DEBUG] Found BUYUK pasta column at r={rr} c={c}")
             break
+    
     if header_row is None:
         # Fallback: use given row_hint area
         header_row = max(1, min(10, ws.max_row))
+        if debug:
+            print(f"[DEBUG] Using fallback header row {header_row}")
+    
     sizes = find_size_columns(ws, min_c, max_c, row_hint=header_row)
-    return header_row, {k: v for k, v in sizes.items() if v}
+    
+    if debug:
+        print(f"[DEBUG] Found size columns: {sizes}")
+        print(f"[DEBUG] Found pasta columns: {pasta_cols}")
+    
+        # Combine size and pasta columns
+        all_cols = {k: v for k, v in sizes.items() if v}
+        all_cols.update({k: v for k, v in pasta_cols.items() if v})
+        return header_row, all_cols
 
+def find_pasta_rows(ws: openpyxl.worksheet.worksheet.Worksheet, base_col: int, start_row: int, debug: bool = False) -> Dict[str, Optional[int]]:
+    """Find pasta product rows in worksheet by scanning the branch's first column (base_col).
+
+    Scans downward from start_row+1 to locate rows that contain the pasta type labels
+    (KROKAN, FISTIK, ORMAN/MEYVELI, GANAJ, ANANAS) in the given column.
+    Returns a dict mapping pasta keys to the found row index (or None).
+    """
+    targets = {
+        "KROKANLI": None,
+        "FISTIKLI": None,
+        "ORMAN": None,
+        "GANAJ": None,
+        "ANANAS": None
+    }
+
+    # scan a reasonable range below the header (e.g., next 30 rows) or until worksheet end
+    max_scan = min(ws.max_row, start_row + 60)
+    for r in range(start_row + 1, max_scan + 1):
+        v = ws.cell(row=r, column=base_col).value
+        if not v:
+            continue
+        up = normalize_text(v)
+        if debug:
+            print(f"[DEBUG] Checking row {r} col {base_col} for pasta: '{v}' -> '{up}'")
+
+        if ("KROKANLI" in up or "KROKAN" in up) and targets["KROKANLI"] is None:
+            targets["KROKANLI"] = r
+            if debug:
+                print(f"[DEBUG] Found KROKANLI pasta at row {r}")
+        elif ("FISTIKLI" in up or "FISTIK" in up or "ANTEP" in up) and targets["FISTIKLI"] is None:
+            targets["FISTIKLI"] = r
+            if debug:
+                print(f"[DEBUG] Found FISTIKLI pasta at row {r}")
+        elif ("ORMAN" in up or ("MEYVELI" in up and "ORMAN" in up)) and targets["ORMAN"] is None:
+            targets["ORMAN"] = r
+            if debug:
+                print(f"[DEBUG] Found ORMAN MEYVELI pasta at row {r}")
+        elif ("GANAJ" in up or "GANAJLI" in up) and targets["GANAJ"] is None:
+            targets["GANAJ"] = r
+            if debug:
+                print(f"[DEBUG] Found GANAJ pasta at row {r}")
+        elif ("ANANAS" in up or "ANANASLI" in up) and targets["ANANAS"] is None:
+            targets["ANANAS"] = r
+            if debug:
+                print(f"[DEBUG] Found ANANAS pasta at row {r}")
+
+    if debug:
+        print(f"[DEBUG] Found pasta rows: {targets}")
+        for k, v in targets.items():
+            if v is None:
+                print(f"[DEBUG] WARNING: Could not find row for {k} pasta")
+
+    return targets
+
+def pasta_key_from_name(name_up: str) -> str:
+    tests = [
+        ("KROKANLI", ["KROKAN"]),
+        ("FISTIKLI", ["FISTIK"]),
+        ("ORMAN", ["ORMAN", "MEYVELI"]),
+        ("GANAJ", ["GANAJ"]),
+        ("ANANAS", ["ANANAS"])
+    ]
+    for key, needles in tests:
+        if any(n in name_up for n in needles):
+            return key
+    return ""
 
 # ----------------------- DONUK: GENERIC MATRIX BLOCKS -----------------------
 
@@ -497,7 +633,7 @@ def flavor_key_from_name(name_up: str) -> str:
 # ----------------------- DONUK: DONDURMALAR ONLY -----------------------
 
 def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", sheet_name: Optional[str] = None) -> Tuple[int, int]:
-    debug = bool(os.getenv("DONUK_DEBUG"))
+    debug = True  # Force debug mode on
     df = read_csv(csv_path)
     stok_col = find_col(df, ["STOK KODU", "STOKKODU", "KOD"])
     miktar_col = find_col(df, ["MIKTAR", "MİKTAR", "ADET"])
@@ -529,10 +665,82 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
     span = find_branch_span(ws, branch_guess) if branch_guess else None
     if span:
         min_c, max_c, branch_row = span
+        # Genişlet arama aralığını
+        max_c = max(max_c + 4, min_c + 12)  # En az 12 kolon tara
     else:
-        min_c, max_c, branch_row = 2, 5, 2
+        min_c, max_c, branch_row = 2, 14, 2  # Default olarak daha geniş bir aralık
     # Discover the actual DONDURMALAR header row and size columns near this branch span
-    header_row, size_cols = locate_dondurmalar_block(ws, min_c, max_c)
+    header_row, size_cols = locate_dondurmalar_block(ws, min_c, max_c, debug)
+
+    # Determine pasta columns relative to the branch span (user provided mapping):
+    # Mono: branch_col + 1, Küçük: branch_col + 2, Büyük: branch_col + 3
+    pasta_cols = {
+        "MONO": (min_c + 1) if (min_c + 1) <= ws.max_column else None,
+        "KUCUK": (min_c + 2) if (min_c + 2) <= ws.max_column else None,
+        "BUYUK": (min_c + 3) if (min_c + 3) <= ws.max_column else None,
+    }
+    if debug:
+        print(f"[DEBUG] Pasta columns assigned from branch span: {pasta_cols} (min_c={min_c})")
+
+    # Find pasta rows by scanning the first column of the branch (min_c)
+    pasta_rows = find_pasta_rows(ws, min_c, header_row, debug)
+
+    # Ensure aggregator exists
+    aggreg: Dict[Tuple[int, int], float] = {}
+    matched = 0
+
+    # Aggregate pasta entries from CSV into aggreg by mapping pasta type -> pasta_rows and size -> pasta_cols
+    for _, r in df.iterrows():
+        name = str(r[stok_col])
+        up = normalize_text(name)
+
+        pasta_key = pasta_key_from_name(up)
+        if not pasta_key:
+            continue
+
+        unit_text = str(r.get("Birim", r.get("BIRIM", "")))
+
+        if debug:
+            print(f"[DEBUG] Found pasta CSV row: {name} -> pasta_key={pasta_key}")
+
+        # choose column by size tokens in CSV name/unit
+        col_idx = None
+        if "MONO" in up or "TEK" in up or re.search(r"\b36\b", up):
+            col_idx = pasta_cols.get("MONO")
+            if debug:
+                print(f"[DEBUG] MONO pasta detected, column={col_idx}")
+        elif "KUCUK" in up or "KÜÇÜK" in up:
+            col_idx = pasta_cols.get("KUCUK")
+            if debug:
+                print(f"[DEBUG] KUCUK pasta detected, column={col_idx}")
+        elif "BUYUK" in up or "BÜYÜK" in up:
+            col_idx = pasta_cols.get("BUYUK")
+            if debug:
+                print(f"[DEBUG] BUYUK pasta detected, column={col_idx}")
+
+        if debug:
+            print(f"[DEBUG] Pasta rows: {pasta_rows}")
+
+        if not col_idx:
+            if debug:
+                print(f"[DEBUG] WARNING: No column match for size in: {name}")
+            continue
+
+        try:
+            qty = float(str(r[miktar_col]).replace(",", "."))
+        except Exception:
+            continue
+
+        row_idx = pasta_rows.get(pasta_key)
+        if not row_idx:
+            if debug:
+                print(f"[DEBUG] WARNING: No pasta row found for key {pasta_key} (source='{name}')")
+            continue
+
+        key = (row_idx, col_idx)
+        aggreg[key] = aggreg.get(key, 0.0) + qty
+        matched += 1
+
     if debug:
         print(f"[DEBUG] Branch span min_c={min_c} max_c={max_c} row={branch_row}")
         print(f"[DEBUG] DONDURMALAR header at row={header_row}")
@@ -542,10 +750,10 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
     if debug:
         print(f"[DEBUG] Flavor rows: {flavor_rows}")
 
-    aggreg: Dict[Tuple[int, int], float] = {}
+    # 'aggreg' and 'matched' may already be populated by earlier pasta aggregation.
+    # Keep block_aggreg and other counters here.
     block_aggreg: Dict[Tuple[int, int], float] = {}
     rokoko_total: float = 0.0
-    matched = 0
 
     blocks = build_blocks(ws, min_c, max_c)
     if debug:
@@ -574,11 +782,24 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
     matrix_aggreg: Dict[Tuple[int, int], float] = {}
     kunefe_total_sum: float = 0.0
     trilece_total_sum: float = 0.0
+    ekler_total_sum: float = 0.0
     for _, r in df.iterrows():
         name = str(r[stok_col])
         grp = str(r[grup_col]) if grup_col and grup_col in df.columns else ""
         up = normalize_text(name)
         g_up = normalize_text(grp)
+        
+
+        if "EKLER" in up:
+            try:
+                qty_r = float(str(r[miktar_col]).replace(",", "."))
+            except Exception:
+                qty_r = 0.0
+            ekler_total_sum += qty_r
+            matched += 1
+            if debug:
+                print(f"[DEBUG] EKLER +{qty_r} now {ekler_total_sum}")
+            continue
         # Collect MEYVELI ROKOKO totals for a dedicated text cell update later
         if ("ROKOKO" in up and "MEYVELI" in up) or ("MEYVELI" in up and "ROKOKO" in up):
             try:
@@ -955,7 +1176,7 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
                     if not isinstance(val, str):
                         continue
                     upv = normalize_text(val)
-                    if "MEYVELI" in upv or "ROKOKO" in upv:
+                    if "ROKOKO" in upv:
                         # Preserve left side, replace or append quantity after '=' if present
                         text = val
                         if "=" in text:
@@ -974,6 +1195,50 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
         else:
             if debug:
                 print(f"[DEBUG] MEYVELI ROKOKO - No branch columns found for '{branch_name}'")
+
+    if ekler_total_sum and ws is not None:
+        fmt_qty = int(ekler_total_sum) if float(ekler_total_sum).is_integer() else ekler_total_sum
+        
+        # Find branch columns first
+        branch_cols = []
+        for r in range(1, min(4, ws.max_row + 1)):
+            for c in range(1, ws.max_column + 1):
+                val = ws.cell(row=r, column=c).value
+                if not isinstance(val, str):
+                    continue
+                upv = normalize_text(val)
+                if branch_name in upv:
+                    branch_cols.append(c)
+                    if debug:
+                        print(f"[DEBUG] EKLER - Found branch '{branch_name}' at r={r} c={c}")
+        
+        # Search for EKLER only in branch columns
+        if branch_cols:
+            for r in range(1, ws.max_row + 1):
+                for c in branch_cols:
+                    val = ws.cell(row=r, column=c).value
+                    if not isinstance(val, str):
+                        continue
+                    upv = normalize_text(val)
+                    if "EKLER" in upv:
+                        # Preserve left side, replace or append quantity after '=' if present
+                        text = val
+                        if "=" in text:
+                            left, _sep, _right = text.partition("=")
+                            new_text = f"{left.strip()} = {fmt_qty}"
+                        else:
+                            new_text = f"{text.strip()} {fmt_qty}"
+                        ws.cell(row=r, column=c).value = new_text
+                        if debug:
+                            print(f"[DEBUG] EKLER TEXT WRITE r={r} c={c} val='{new_text}' (branch column)")
+                        # Update only the first match
+                        break
+                else:
+                    continue
+                break
+        else:
+            if debug:
+                print(f"[DEBUG] EKLER - No branch columns found for '{branch_name}'")
 
     wb.save(output_path)
     print(f"[DONUK] Dondurmalar yazıldı: {len(aggreg)} hücre, {matched} kalem -> {output_path}")
