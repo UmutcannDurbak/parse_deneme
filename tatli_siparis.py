@@ -30,7 +30,7 @@ except ImportError:
 
 # PyInstaller ile build ederken .ico dosyasını eklemeyi unutmayın!
 ICON_PATH = "appicon.ico"
-VERSION = "v1.2.8"
+VERSION = "v1.3.0"
 DEVELOPER = "Developer U.D"
 
 # Güncelleme ayarları
@@ -218,7 +218,15 @@ def is_newer_version(latest_version, current_version):
         return False
 
 # Yeni OOP koordinatör (eski fonksiyonlar geriye dönük uyum için içeride kullanılacak)
-from shipment_oop import ShipmentCoordinator, clear_workbook_values, format_today_in_workbook, IZMIR_BRANCHES
+from shipment_oop import (
+    ShipmentCoordinator, 
+    clear_workbook_values, 
+    format_today_in_workbook, 
+    IZMIR_BRANCHES,
+    BranchDecisionEngine,
+    MULTI_DAY_BRANCHES,
+    SHEET_NAME_MAPPING
+)
 '''
 # Hücre formatını bozmadan sadece ana/master hücreye değer silen fonksiyon
 def clear_cell_value_preserve_format(ws, row, col, clear_formulas=False):
@@ -330,10 +338,55 @@ def run_process(csv_path, status_label, log_widget, izmir_day_var=None):
                 log_widget.see(tk.END)
                 log_widget.update_idletasks()
             log_widget.after(0, append_log)
+        
         # Koordinatörü kullanarak üç sevkiyat dosyasını oluştur
         coord = ShipmentCoordinator()
         sheet_hint = izmir_day_var.get() if izmir_day_var else None
         sheet_hint = sheet_hint if sheet_hint not in ("", "Seçim yok") else None
+        
+        # Check if branch requires day selection
+        from shipment_oop import BranchDecisionEngine, CsvOrderReader, SHEET_NAME_MAPPING
+        try:
+            reader = CsvOrderReader(csv_path)
+            reader.load()
+            branch_name = reader.get_branch_name()
+            
+            # Also try read_branch_from_file for better accuracy
+            if not branch_name:
+                import re
+                with open(csv_path, encoding="utf-8") as f:
+                    for line in f:
+                        from shipment_oop import TextNormalizer
+                        up = TextNormalizer.up(line)
+                        if "SUBE" in up and ("KODU" in up or "ADI" in up):
+                            part = line.split(":", 1)[-1] if ":" in line else line
+                            part = part.strip().strip('"').strip("'").strip()
+                            if "-" in part:
+                                part = part.split("-", 1)[-1]
+                            part = part.strip()
+                            m = re.search(r"\(([^)]+)\)", part)
+                            if m:
+                                branch_name = m.group(1).strip()
+                            elif part:
+                                branch_name = part
+                            break
+            
+            if branch_name:
+                engine = BranchDecisionEngine(branch_name)
+                if engine.requires_day_selection() and not sheet_hint:
+                    possible_sheets = engine.get_possible_sheets()
+                    msg = (f"⚠️ '{branch_name}' şubesi birden fazla sevkiyat gününde var!\n"
+                           f"Lütfen gün seçimi yapın: {', '.join(possible_sheets)}")
+                    log_widget.insert(tk.END, f"[WARN] {msg}\n")
+                    status_label.config(text="⚠️ Gün seçimi gerekli!")
+                    messagebox.showwarning("Gün Seçimi Gerekli", msg)
+                    return
+                elif sheet_hint:
+                    # Map user-friendly name to actual sheet name
+                    sheet_hint = SHEET_NAME_MAPPING.get(sheet_hint, sheet_hint)
+        except Exception as e:
+            log_widget.insert(tk.END, f"[WARN] Branch kontrolü başarısız: {e}\n")
+        
         status_label.config(text="⏳ Başladı: CSV okunuyor...")
         log_widget.insert(tk.END, "[INFO] İşlem başladı: CSV okunuyor ve eşleştirilecek.\n")
         log_widget.see(tk.END)
@@ -709,6 +762,7 @@ def main():
         "Salı İzmir",
         "Cuma İzmir",
         "Cumartesi KSK",
+        "Güzelbahçe",
         "Kuşadası-Aydın",
         "Kuşadası Çmert",
     ]

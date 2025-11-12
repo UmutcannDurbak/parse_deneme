@@ -62,6 +62,13 @@ test_update_system.py
 rename_and_zip.py
 parse_gptfix_local.py
 
+# Test files created during development
+test_*.py
+check_*.py
+debug_*.py
+verify_*.py
+analyze_*.py
+
 # Icon and packaging helpers
 appicon.ico
 build.bat

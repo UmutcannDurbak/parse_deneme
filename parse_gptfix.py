@@ -116,14 +116,20 @@ def read_branch_from_file(csv_path: str) -> Optional[str]:
             for line in f:
                 up = normalize_text(line)
                 if "SUBE" in up and ("KODU" in up or "ADI" in up):
+                    # Extract part after colon
                     part = line.split(":", 1)[-1] if ":" in line else line
                     part = part.strip()
+                    # Remove quotes if present
+                    part = part.strip('"').strip("'").strip()
+                    # Split by dash and take the part after it
                     if "-" in part:
                         part = part.split("-", 1)[-1]
                     part = part.strip()
+                    # If parens exist, prefer the inner content (e.g., ANKARA(KIZILAY) -> KIZILAY)
                     m = re.search(r"\(([^)]+)\)", part)
                     if m:
                         return m.group(1).strip()
+                    # Remove trailing DEPO if present
                     if part.upper().endswith(" DEPO"):
                         part = part[:-5].strip()
                     return part
@@ -140,20 +146,176 @@ def master_cell(ws: openpyxl.worksheet.worksheet.Worksheet, r: int, c: int):
             return ws.cell(row=min_row, column=min_col)
     return ws.cell(row=r, column=c)
 
+def locate_donuk_products_block(ws: openpyxl.worksheet.worksheet.Worksheet, min_c: int, max_c: int, branch_name: str, debug: bool = False) -> Dict[str, Tuple[int, int, str]]:
+    """Locate frozen ('DONUK') products within branch span and build map for each variant.
+    Uses simple text matching to find products, without scoring or variant handling.
+    
+    Args:
+        ws: Worksheet to scan
+        min_c: Branch start column 
+        max_c: Branch end column
+        branch_name: Name of the branch to match
+        debug: Enable debug logging
+        
+    Returns:
+        Dict mapping normalized variant text -> (row_index, column_index, original_text)
+    """
+    res: Dict[str, Tuple[int, int, str]] = {}
+    branch_norm = normalize_text(branch_name) if branch_name else ""
+    
+    # First find branch columns by looking for branch name in first few rows
+    branch_cols = []
+    for r in range(1, min(4, ws.max_row + 1)):
+        for c in range(1, ws.max_column + 1):
+            val = ws.cell(row=r, column=c).value
+            if not isinstance(val, str):
+                continue
+            upv = normalize_text(val)
+            if branch_norm and branch_norm in upv:
+                branch_cols.append(c)
+                if debug:
+                    print(f"[DEBUG] Found branch '{branch_name}' at r={r} c={c}")
+    
+    if not branch_cols:
+        if debug:
+            print(f"[DEBUG] No columns found for branch '{branch_name}'")
+        return res
+
+    # Sections to skip/ignore (keep these to avoid section confusion)
+    skip_sections = {
+        "MAKARON", "PASTA", "DONDURMA", "CHEESECAKE", "CATAL", "ÇATAL", 
+        "BOREK", "BÖREK", "TATLI", "KUNEFE", "SERBET", "TRILECE"
+    }
+    
+    # Define exact products to collect (order matters - check longer names first)
+    target_products = [
+        "CITIR MANTI",
+        "MANTI",  # Plain MANTI - in different column (c=12) on same row as BOYOZ
+        "CEVIZLI TAHINLI BAKLAVA",  # Must check before "SOGUK BAKLAVA"
+        "SOGUK BAKLAVA",
+        "BOYOZ",
+        "PATATES",
+        "HAMBURGER KOFTE",
+        "HAMBURGER EKMEGI",  # Must be separate from HAMBURGER KOFTE
+        "TAVUK BUT",
+        "EKSI MAYALI TOST EKMEGI",
+        "ZERDECALLI TOST EKMEGI"
+    ]
+        
+    # Determine column range to scan - use branch span (min_c to max_c) to catch all products
+    # This ensures we find products in adjacent columns (e.g., MANTI at c=12 when BOYOZ is at c=10)
+    scan_min_c = min(branch_cols) if branch_cols else min_c
+    scan_max_c = max(branch_cols) + 6 if branch_cols else max_c  # Scan a few columns beyond branch
+    
+    # Look for products in branch span (not just branch columns)
+    for r in range(1, ws.max_row + 1):
+        for c in range(scan_min_c, min(scan_max_c + 1, ws.max_column + 1)):
+            v = ws.cell(row=r, column=c).value
+            if not v or not isinstance(v, str):
+                continue
+            
+            orig_text = str(v).strip()
+            up = normalize_text(orig_text)
+            if not up:
+                continue
+            
+            # Remove trailing numbers to handle cells that already have quantities
+            # e.g., "CITIR MANTI    1" -> "CITIR MANTI"
+            up_clean = re.sub(r'\s+\d+\s*$', '', up).strip()
+
+            # Skip section headers to avoid confusion
+            skip_this = False
+            for section in skip_sections:
+                # Only skip if it's ONLY a section name, not part of product name
+                if up_clean == section:
+                    skip_this = True
+                    break
+            if skip_this:
+                continue
+
+            # Check for exact matches with target products (order matters!)
+            matched = False
+            for target in target_products:
+                if up_clean == target:
+                    # Skip if we already found this product (keep the first/leftmost occurrence)
+                    if target in res:
+                        continue
+                    
+                    # Handle merged cells
+                    merge = is_merged_at(ws, r, c)
+                    if merge:
+                        master_r, master_c, _, _ = merge
+                        cell = ws.cell(row=master_r, column=master_c)
+                        r, c = master_r, master_c
+                    else:
+                        cell = ws.cell(row=r, column=c)
+                    
+                    # Store with clean name (without quantity)
+                    res[target] = (r, c, orig_text)
+                    
+                    if debug:
+                        print(f"[DEBUG] Found DONUK product '{target}' at r={r} c={c} text='{orig_text}'")
+                    
+                    matched = True
+                    break
+            
+            if matched:
+                continue
+    
+    if debug:
+        print(f"[DEBUG] locate_donuk_products_block for branch '{branch_name}' collected {len(res)} products: {list(res.keys())}")
+    
+    return res
+
 
 def safe_write(ws: openpyxl.worksheet.worksheet.Worksheet, r: int, c: int, value) -> None:
-    ws.cell(row=r, column=c).value = value
-    # Check if cell is part of a merged range
-    '''for mr in ws.merged_cells.ranges:
-        min_row, min_col, max_row, max_col = mr.bounds
-        if min_row <= r <= max_row and min_col <= c <= max_col:
-            # If this is not the master cell, find the master cell
-            if r != min_row or c != min_col:
-                master_cell = ws.cell(row=min_row, column=min_col)
-                master_cell.value = value
-                return
-    # If not merged or is master cell, write directly
-    cell.value = value'''
+    """Write a value into worksheet cell (r,c) safely handling merged cells.
+
+    If the target is inside a merged range, write into the master cell. If
+    writing fails due to openpyxl merged-cell restrictions, unmerge the range,
+    write the value into the top-left master cell, then re-merge the same range.
+    This preserves the layout while ensuring the value is written.
+    """
+    # Prefer to write directly; if the target is part of a merged range, perform
+    # a safe unmerge->write->remerge cycle which avoids openpyxl "MergedCell"
+    # read-only exceptions on some templates.
+    try:
+        ws.cell(row=r, column=c).value = value
+        return
+    except Exception:
+        pass
+
+    merged = is_merged_at(ws, r, c)
+    if not merged:
+        # last attempt: direct write
+        try:
+            ws.cell(row=r, column=c).value = value
+            return
+        except Exception:
+            return
+
+    min_row, min_col, max_row, max_col = merged
+    # Try writing to the master cell first; if that fails, unmerge, write and remerge
+    try:
+        ws.cell(row=min_row, column=min_col).value = value
+        return
+    except Exception:
+        pass
+
+    # Fallback: unmerge -> write -> remerge. This preserves the merged layout while
+    # ensuring the value is applied to a writable cell object.
+    try:
+        ws.unmerge_cells(start_row=min_row, start_column=min_col, end_row=max_row, end_column=max_col)
+        ws.cell(row=min_row, column=min_col).value = value
+        ws.merge_cells(start_row=min_row, start_column=min_col, end_row=max_row, end_column=max_col)
+        return
+    except Exception:
+        # Give up silently; caller may handle logging
+        try:
+            ws.cell(row=r, column=c).value = value
+        except Exception:
+            pass
+        return
 
 
 def find_branch_span(ws: openpyxl.worksheet.worksheet.Worksheet, branch_name: str) -> Optional[Tuple[int, int, int]]:
@@ -212,6 +374,48 @@ def resolve_numeric_col(ws: openpyxl.worksheet.worksheet.Worksheet, r: int, c: i
             break
         c += 1
     return c
+
+
+def format_text_with_qty(text: str, qty) -> str:
+    """Return text with quantity appended or replaced consistently as 'LEFT = qty'.
+
+    - If the original text contains '=', replace the RHS with the qty.
+    - Otherwise, remove any trailing numeric tokens (previous appended quantities) and append ' = qty'.
+    """
+    try:
+        fmt_qty = int(qty) if float(qty).is_integer() else qty
+    except Exception:
+        fmt_qty = qty
+    t = str(text or "").strip()
+    if "=" in t:
+        left = t.partition("=")[0].strip()
+    else:
+        # remove trailing groups of numbers, commas, dots and spaces
+        left = re.sub(r"(\s+[0-9\.,]+)+\s*$", "", t).strip()
+    if left == "":
+        return f"= {fmt_qty}"
+    return f"{left} = {fmt_qty}"
+
+
+def append_text_with_space(text: str, qty, sep: str = "    ") -> str:
+    """Append qty to original text using a separator (default: 4 spaces).
+
+    Behavior:
+    - Remove any previously appended numeric tokens at the end of the string.
+    - Return "LEFT<sep>qty" where LEFT is the cleaned original text.
+    """
+    try:
+        fmt_qty = int(qty) if float(qty).is_integer() else qty
+    except Exception:
+        fmt_qty = qty
+    t = str(text or "").strip()
+    # Remove trailing forms like '= 1' or ': 1' or '- 1' and any leftover numeric groups
+    t = re.sub(r"\s*[=:\-]\s*[0-9\.,\s]*$", "", t).strip()
+    # Remove trailing groups that look like previously appended quantities (numbers, commas/dots, spaces)
+    left = re.sub(r"(\s+[0-9\.,]+)+\s*$", "", t).strip()
+    if left == "":
+        return f"{sep}{fmt_qty}"
+    return f"{left}{sep}{fmt_qty}"
 
 
 def find_size_columns(ws: openpyxl.worksheet.worksheet.Worksheet, min_c: int, max_c: int, row_hint: int) -> Dict[str, Optional[int]]:
@@ -334,11 +538,99 @@ def locate_dondurmalar_block(ws: openpyxl.worksheet.worksheet.Worksheet, min_c: 
     if debug:
         print(f"[DEBUG] Found size columns: {sizes}")
         print(f"[DEBUG] Found pasta columns: {pasta_cols}")
+
+    # Combine size and pasta columns and return (always)
+    all_cols = {k: v for k, v in sizes.items() if v}
+    all_cols.update({k: v for k, v in pasta_cols.items() if v})
+    return header_row, all_cols
+
+
+def locate_makaron_block(ws: openpyxl.worksheet.worksheet.Worksheet, min_c: int, max_c: int, debug: bool = False) -> Dict[str, Tuple[int, int, str]]:
+    """Locate the MAKARON header within the branch span and collect all variants beneath it.
     
-        # Combine size and pasta columns
-        all_cols = {k: v for k, v in sizes.items() if v}
-        all_cols.update({k: v for k, v in pasta_cols.items() if v})
-        return header_row, all_cols
+    Args:
+        ws: Worksheet to scan
+        min_c: Branch start column
+        max_c: Branch end column (expanded)
+        debug: Enable debug logging
+    
+    Returns:
+        Dict mapping normalized variant text -> (row_index, column_index, original_text).
+        Original text is preserved for later writing format: "variant = qty".
+    """
+    res: Dict[str, Tuple[int, int, str]] = {}
+    header_r = None
+    header_c = None
+    # find MAKARON header within branch span in first 100 rows
+    for r in range(1, min(100, ws.max_row) + 1):
+        for c in range(min_c, max_c + 1):  # Only scan within branch span
+            v = ws.cell(row=r, column=c).value
+            if not v:
+                continue
+            if normalize_text(v) == "MAKARON":
+                header_r = r
+                header_c = c
+                if debug:
+                    print(f"[DEBUG] Found MAKARON header at r={r} c={c} val='{v}' (within branch span {min_c}-{max_c})")
+                break
+        if header_r:
+            break
+    if not header_r:
+        if debug:
+            print("[DEBUG] No MAKARON header found")
+        return res
+
+    # For makaron, we want to look at the full 3x2 grid from branch start
+    # The 2 columns start from the branch min_c
+    variant_rows = [header_r + i for i in range(1, 4)]  # 3 rows beneath header
+    variant_cols = list(range(min_c, min(max_c + 1, min_c + 4)))  # Look at up to 6 columns (wider than needed)
+    
+    if debug:
+        print(f"[DEBUG] Will scan for variants in {len(variant_rows)} rows x {len(variant_cols)} cols grid starting at row {header_r+1} col {min_c}")
+        
+    # Get the full 3x2 grid beneath MAKARON
+    seen = set()  # Track processed cells to avoid duplicates
+    
+    if debug:
+        print(f"[DEBUG] Scanning for variants in rows {variant_rows} cols {variant_cols}")
+    
+    for r in variant_rows:
+        for c in variant_cols:
+            # If this cell is part of a merge, get its master
+            merge = is_merged_at(ws, r, c)
+            if merge:
+                master_r, master_c, _, _ = merge
+                if (master_r, master_c) in seen:
+                    continue
+                seen.add((master_r, master_c))
+                cell = ws.cell(row=master_r, column=master_c)
+            else:
+                if (r, c) in seen:
+                    continue
+                seen.add((r, c))
+                cell = ws.cell(row=r, column=c)
+            
+            if not cell.value:
+                continue
+            
+            # Keep original text for format: "variant = qty"
+            orig_text = str(cell.value).strip()
+            if not orig_text:
+                continue
+            
+            up = normalize_text(orig_text)
+            if not up:
+                continue
+            
+            # Store row, column, and original text
+            res[up] = (r, c, orig_text)
+            if debug:
+                print(f"[DEBUG] MAKARON variant '{up}' at row={r} col={c} text='{orig_text}'")
+    
+
+    if debug:
+        print(f"[DEBUG] locate_makaron_block collected {len(res)} variants: {list(res.keys())}")
+    return res
 
 def find_pasta_rows(ws: openpyxl.worksheet.worksheet.Worksheet, base_col: int, start_row: int, debug: bool = False) -> Dict[str, Optional[int]]:
     """Find pasta product rows in worksheet by scanning the branch's first column (base_col).
@@ -516,6 +808,40 @@ def build_blocks(ws: openpyxl.worksheet.worksheet.Worksheet, min_c: int, max_c: 
     return blocks
 
 
+def is_specific_group_product(name_up: str, group_up: str = "") -> bool:
+    """Check if a product belongs to a specific group (TOST, EKMEK, etc.) that should be handled separately.
+    
+    Args:
+        name_up: Normalized product name
+        group_up: Normalized group name from CSV (optional)
+    
+    Returns:
+        bool: True if product belongs to a specific other group
+    """
+    specific_groups = {
+        "MUTFAK": ["SOSLU TAVUK", "KOFTE", "KÖFTE", "HAMBURGER"],
+        "TOST": ["TOST"],
+        "EKMEK": ["EKMEK"],
+        "CHEESECAKE": ["CHEESECAKE", "TRILECE", "TRILEÇE"],
+        "BOREK": ["BÖREK", "BOREK", "CATAL", "ÇATAL", "KOL BOREGI", "SU BOREGI"],
+        "TATLI": ["BAKLAVA", "TATLI", "KÜNEFE", "KUNEFE"],
+        "PASTA": ["PASTA"],
+        "DONDURMA": ["DONDURMA", "ROKOKO"]
+        }
+    
+        # If product belongs to a specific group by CSV group column
+    if group_up in specific_groups:
+        return True
+    
+    # Check product name against specific group keywords
+    for group, keywords in specific_groups.items():
+        if any(kw in name_up for kw in keywords):
+            # Exception: if it's explicitly a DONUK/frozen product
+            if "DONUK" in name_up or "CITIR MANTI" in name_up or "ÇITIR MANTI" in name_up or "BOYOZ" in name_up:
+                return False
+            return True
+    return False
+
 def route_group_for_name(name_up: str) -> Optional[str]:
     """Route CSV row name to a target block group by keywords."""
     if any(k in name_up for k in ["CHEESE", "CHEESECAKE", "TRILECE", "TRILECE"]):
@@ -632,8 +958,129 @@ def flavor_key_from_name(name_up: str) -> str:
 
 # ----------------------- DONUK: DONDURMALAR ONLY -----------------------
 
-def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", sheet_name: Optional[str] = None) -> Tuple[int, int]:
-    debug = True  # Force debug mode on
+def map_special_csv_names(name_up: str, debug: bool = False) -> str:
+    """Special mapping for product name matches (supports substring matching).
+    
+    Args:
+        name_up: Normalized CSV product name (may include quantity, codes, etc.)
+        debug: Enable debug output
+    Returns:
+        String with mapped product name if match found, otherwise original name
+    """
+    # Define CSV pattern -> Excel name mappings (order matters - longer patterns first!)
+    special_mappings = [
+        # Baklava mappings - MUST check longer pattern first
+        ("CEVIZLI TAHINLI SOGUK BAKLAVA", "CEVIZLI TAHINLI BAKLAVA"),
+        # Don't map plain SOGUK BAKLAVA - it should stay as is
+        
+        # Tost bread mappings
+        ("TOST EKMEGI TAM BUGDAY EKSI MAYALI", "EKSI MAYALI TOST EKMEGI"),
+        ("ZERDECALLI EKMEK EKSI MAYALI", "ZERDECALLI TOST EKMEGI"),
+    ]
+
+    # Check for substring matches (order matters!)
+    for csv_pattern, excel_name in special_mappings:
+        if csv_pattern in name_up:
+            # Replace the pattern with the Excel name
+            result = name_up.replace(csv_pattern, excel_name)
+            if debug:
+                print(f"[SPECIAL MAPPING] {name_up} -> {result}")
+            return result
+
+    return name_up
+
+def match_donuk_product(name_up: str, donuk_map: Dict[str, Tuple[int, int, str]], debug: bool = False) -> Optional[Tuple[str, int]]:
+    """Match products with strict separation for MANTI, BAKLAVA variants and other critical products.
+    
+    Args:
+        name_up: Normalized CSV product name
+        donuk_map: Map of donuk products from Excel
+        debug: Enable debug output
+    Returns:
+        Tuple of (matched_key, score) if match found, None otherwise
+    """
+    clean_up = re.sub(r"[\(\{\}\)]", "", name_up).strip()
+
+    # Apply special name mapping first
+    mapped_name = map_special_csv_names(clean_up, debug=debug)
+    
+    if debug:
+        if mapped_name != clean_up:
+            print(f"[MATCH_DONUK] After special mapping: {clean_up} => {mapped_name}")
+        else:
+            print(f"[MATCH_DONUK] Processing: {mapped_name}")
+
+    # 1) Try exact match first (after special mapping)
+    for excel_key in donuk_map.keys():
+        excel_clean = re.sub(r"[\(\{\}\)]", "", excel_key).strip()
+        
+        # Exact matches for all products
+        if mapped_name == excel_clean:
+            if debug:
+                print(f"  => EXACT match => {excel_key}")
+            return (excel_key, 100)
+            
+        # Special handling for MANTI to keep variants separate
+        if "MANTI" in mapped_name or "MANTI" in excel_clean:
+            # Only match CITIR MANTI with CITIR MANTI
+            if "CITIR" in mapped_name and "CITIR" in excel_clean:
+                if mapped_name == excel_clean:
+                    if debug:
+                        print(f"  => EXACT match (CITIR MANTI) => {excel_key}")
+                    return (excel_key, 100)
+            # Only match plain MANTI with plain MANTI
+            elif mapped_name == "MANTI" and excel_clean == "MANTI":
+                if debug:
+                    print(f"  => EXACT match (MANTI) => {excel_key}")
+                return (excel_key, 100)
+            # Skip other partial matches for MANTI
+            continue
+            
+        # Special handling for BAKLAVA to keep variants separate
+        if "BAKLAVA" in mapped_name or "BAKLAVA" in excel_clean:
+            # Only exact matches for BAKLAVA variants
+            if mapped_name == excel_clean:
+                if debug:
+                    print(f"  => EXACT match (BAKLAVA variant) => {excel_key}")
+                return (excel_key, 100)
+            # Skip fuzzy matches for BAKLAVA
+            continue
+
+    # 2) Try fuzzy matching (but skip MANTI and BAKLAVA variants - only exact match allowed)
+    best_key = None
+    best_score = 0
+    
+    for excel_key, (row, col, label) in donuk_map.items():
+        excel_clean = re.sub(r"[\(\{\}\)]", "", excel_key).strip()
+
+        # Skip fuzzy matching for MANTI and BAKLAVA variants - only exact match allowed
+        if "MANTI" in mapped_name or "MANTI" in excel_clean:
+            continue
+        if "BAKLAVA" in mapped_name or "BAKLAVA" in excel_clean:
+            continue
+
+        # Simple substring matching for other products
+        if mapped_name in excel_clean or excel_clean in mapped_name:
+            if len(excel_clean) >= 5:
+                score = 90
+                if score > best_score:
+                    best_score = score
+                    best_key = excel_key
+
+    # 3) Return best if found
+    if best_key and best_score >= 80:
+        if debug:
+            print(f"  => SUBSTRING match => {best_key} (score={best_score})")
+        return (best_key, best_score)
+    else:
+        if debug:
+            if best_key:
+                print(f"  => NO MATCH (best was '{best_key}' with score {best_score})")
+            else:
+                print(f"  => NO MATCH found at all")
+        return None
+
+def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", sheet_name: Optional[str] = None, debug: bool = False, force_donuk: Optional[Iterable[str]] = None):
     df = read_csv(csv_path)
     stok_col = find_col(df, ["STOK KODU", "STOKKODU", "KOD"])
     miktar_col = find_col(df, ["MIKTAR", "MİKTAR", "ADET"])
@@ -643,6 +1090,16 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
 
     branch_guess = read_branch_from_file(csv_path)
     branch_name = branch_guess  # Use branch_guess as branch_name for text updates
+    if debug:
+        print(f"[DEBUG] Processing CSV for branch: {branch_name}")
+
+    # Prepare force-donuk set (normalized) for trial runs
+    force_set = set()
+    if force_donuk:
+        for item in force_donuk:
+            if item:
+                force_set.add(normalize_text(item))
+    forced_hits = []  # collect entries that were forced to donuk handling for reporting
 
     if os.path.exists(output_path):
         wb = load_workbook(output_path)
@@ -685,9 +1142,564 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
     # Find pasta rows by scanning the first column of the branch (min_c)
     pasta_rows = find_pasta_rows(ws, min_c, header_row, debug)
 
+    # Locate MAKARON block (3 rows x 2 columns) and build variant -> (row, col, text) map
+    makaron_map = locate_makaron_block(ws, min_c, max_c, debug=debug)
+    if debug:
+        print(f"[DEBUG] Makaron map: {makaron_map}")
+
+    # Locate DONUK products and build product -> (row, col, text) map
+    donuk_map = locate_donuk_products_block(ws, min_c, max_c, branch_name=branch_name, debug=debug)
+    if debug:
+        print(f"[DEBUG] Donuk products map: {donuk_map}")
+
+    # --- SIMPLE SPECIAL-ITEM PASS -------------------------------------------------
+    # For the user's requested list we apply a very simple deterministic match:
+    # - If CSV product normalized contains any of the canonical tokens below,
+    #   we try to find an excel target by a simple substring search in donuk_map keys
+    #   or elsewhere in the branch span. If found, we write the qty immediately
+    #   (append to the found cell) and mark the CSV row as processed so later
+    #   scoring/aggregation doesn't touch it.
+    # Order matters: longer/more specific items first to avoid substring confusion
+    special_items = [
+        "CEVİZLİ TAHİNLİ BAKLAVA",  # Must come before "SOĞUK BAKLAVA"
+        "SOĞUK BAKLAVA",
+        "HAMBURGER EKMEĞİ",  # Must come before "HAMBURGER KÖFTE"
+        "HAMBURGER KÖFTE",
+        "ÇITIR MANTI",  # Must come before plain "MANTI"
+        "EKŞİ MAYALI TOST EKMEĞİ",
+        "ZERDEÇALLI TOST EKMEĞİ",
+        "ACI-TATLI SOSLU TAVUK",
+        "USTANIN KÖFTESİ",
+        "KADAYIFLI ŞİNİTSEL",
+        "MADALYON BONFİLE",
+        "SPAGETTİ ET",
+        "ÇITIR TAVUK",
+        "TAVUK BUT",
+        "DANA ASADO",
+        "MANTI",  # Plain MANTI (separate from CITIR MANTI)
+        "BOYOZ",
+        "PATATES"
+    ]
+    # normalize tokens
+    special_norm = [normalize_text(s) for s in special_items]
+
+    # We'll collect a simple report of which CSV rows we wrote from this pass
+    simple_pass_hits = []
+
+    # Ensure processed_products exists (may be declared later in this function)
+    try:
+        processed_products
+    except NameError:
+        processed_products = set()
+
+    # Simple pass: iterate CSV and handle rows matching any special token
+    for idx, row in df.iterrows():
+        try:
+            name_raw = str(row[stok_col])
+            qty_raw = row[miktar_col]
+        except Exception:
+            continue
+        up = normalize_text(name_raw)
+        clean_up = re.sub(r"[\(\{\}\)]", "", up).strip()
+
+        # skip already-processed (from earlier runs)
+        if clean_up in processed_products:
+            continue
+
+        # Apply special mappings FIRST to handle products like "CEVIZLI TAHINLI SOGUK BAKLAVA"
+        # This maps it to "CEVIZLI TAHINLI BAKLAVA"
+        mapped_clean = map_special_csv_names(clean_up, debug=False)
+        
+        # Check for exact matches first, then substring matches
+        # This prevents "SOGUK BAKLAVA" from matching "CEVIZLI TAHINLI BAKLAVA"
+        matched_token = None
+        
+        # First try exact match
+        for tn in special_norm:
+            if tn and mapped_clean == tn:
+                matched_token = tn
+                break
+        
+        # If no exact match, try substring match (but only for items not already processed)
+        if not matched_token:
+            for tn in special_norm:
+                if tn and tn in mapped_clean:
+                    matched_token = tn
+                    break
+        
+        if not matched_token:
+            continue
+
+        # parse qty
+        try:
+            qty = float(str(qty_raw).replace(",", "."))
+        except Exception:
+            if debug:
+                print(f"[DEBUG] SIMPLE PASS: could not parse qty for '{name_raw}'")
+            continue
+
+        # Try exact match in donuk_map first (normalize keys)
+        target = None
+        for dk, target_val in donuk_map.items():
+            if not dk:
+                continue
+            # Use exact match to prevent confusion (e.g., "MANTI" vs "CITIR MANTI")
+            if matched_token == normalize_text(dk):
+                target = target_val
+                if debug:
+                    print(f"[DEBUG] SIMPLE PASS: matched token '{matched_token}' -> donuk_map key '{dk}'")
+                break
+
+        # If not found in donuk_map, scan the worksheet branch span for any textual cell
+        if not target:
+            found = None
+            try:
+                for rr in range(1, ws.max_row + 1):
+                    for cc in range(max(1, min_c), min(ws.max_column, max_c) + 1):
+                        val = ws.cell(row=rr, column=cc).value
+                        if not val or not isinstance(val, str):
+                            continue
+                        upv = normalize_text(val)
+                        # Use exact match for critical products to avoid confusion
+                        if matched_token == upv:
+                            found = (rr, cc, val)
+                            break
+                    if found:
+                        break
+            except Exception:
+                found = None
+            if found:
+                target = (found[0], found[1], found[2])
+                if debug:
+                    print(f"[DEBUG] SIMPLE PASS: matched token '{matched_token}' -> worksheet cell r={found[0]} c={found[1]} val='{found[2]}'")
+
+        # If we found a target, write appended text and mark processed
+        if target:
+            row_idx, col_idx, orig_text = target
+            new_text = append_text_with_space(orig_text, qty)
+            try:
+                safe_write(ws, row_idx, col_idx, new_text)
+                processed_products.add(clean_up)
+                simple_pass_hits.append({"csv": name_raw, "matched": orig_text, "row": row_idx, "col": col_idx, "qty": qty, "excel_name": map_special_csv_names(clean_up)})
+                if debug:
+                    print(f"[DEBUG] SIMPLE PASS WRITE r={row_idx} c={col_idx} val='{new_text}' for CSV='{name_raw}' -> EXCEL='{map_special_csv_names(clean_up)}' qty={qty}")
+            except Exception as e:
+                if debug:
+                    print(f"[DEBUG] SIMPLE PASS WRITE ERROR for '{name_raw}' -> {e}")
+
+    if simple_pass_hits and debug:
+        print("\n[SIMPLIFIED MATCH PASS] Summary of writes for provided special list:")
+        for h in simple_pass_hits:
+            print(f" - CSV: '{h['csv']}' | EXCEL: '{h['excel_name']}' -> wrote to r={h['row']} c={h['col']} (cell='{h['matched']}') qty={h['qty']}")
+    # --- end simple pass --------------------------------------------------------
+
     # Ensure aggregator exists
     aggreg: Dict[Tuple[int, int], float] = {}
     matched = 0
+
+    # Dictionary to collect DONUK product quantities
+    donuk_aggreg: Dict[str, float] = {}
+    processed_products = set()
+    # Separate dictionary for MAKARON quantities (keep makaron logic independent from DONUK)
+    makaron_aggreg: Dict[str, float] = {}
+
+    # Helper: check whether a CSV product name has any reasonable match in the
+    # Excel-side maps (donuk_map or makaron_map). If a product is classified as
+    # a "specific group" we will only allow processing when the Excel template
+    # actually contains a matching key.
+    def product_matches_excel(name_up: str) -> bool:
+        # tokenized significant words
+        name_words = set(w for w in name_up.split() if len(w) > 2)
+
+        # check donuk map
+        for k in donuk_map.keys():
+            if not k:
+                continue
+            k_clean = re.sub(r"[\(\{\}\)]", "", k).strip()
+            if k_clean == name_up or name_up in k_clean or k_clean in name_up:
+                return True
+            k_words = set(w for w in k_clean.split() if len(w) > 2)
+            if name_words & k_words:
+                return True
+
+        # check makaron map
+        for k in makaron_map.keys():
+            if not k:
+                continue
+            if k == name_up or name_up in k or k in name_up:
+                return True
+            k_words = set(w for w in k.split() if len(w) > 2)
+            if name_words & k_words:
+                return True
+
+        # scan worksheet in the branch span for any textual cell that matches
+        # This allows specific-group products to be accepted if they appear
+        # elsewhere in the template (pasta rows, matrix blocks, etc.).
+        try:
+            for rr in range(1, ws.max_row + 1):
+                for cc in range(max(1, min_c), min(ws.max_column, max_c) + 1):
+                    val = ws.cell(row=rr, column=cc).value
+                    if not val or not isinstance(val, str):
+                        continue
+                    upv = normalize_text(val)
+                    if not upv:
+                        continue
+                    if upv == name_up or name_up in upv or upv in name_up:
+                        return True
+                    upv_words = set(w for w in upv.split() if len(w) > 2)
+                    if name_words & upv_words:
+                        return True
+        except Exception:
+            # If anything goes wrong scanning the sheet, fall back to False
+            pass
+
+        return False
+
+    # Aggregate DONUK entries from CSV
+    if donuk_map:
+        for _, r in df.iterrows():
+            try:
+                name_raw = str(r[stok_col])
+                group_val = normalize_text(str(r.get(grup_col, ""))) if grup_col else ""
+                miktar_val = float(str(r[miktar_col]).replace(",", "."))
+            except Exception:
+                continue
+
+            # Normalize name
+            up = normalize_text(name_raw)
+            clean_up = re.sub(r"[\(\{\}\)]", "", up).strip()
+
+            # If this product matches any forced token, treat as DONUK candidate
+            forced_flag = False
+            if force_set:
+                for f in force_set:
+                    if f and f in clean_up:
+                        forced_flag = True
+                        break
+
+            # Apply special mappings with debug info
+            mapped_name = map_special_csv_names(clean_up, debug=debug)
+            if mapped_name != clean_up and debug:
+                print(f"\n[SPECIAL PRODUCT FOUND] Processing:")
+                print(f"Original CSV name: {name_raw}")
+                print(f"Normalized: {clean_up}")
+                print(f"Mapped to: {mapped_name}")
+                print(f"Quantity: {miktar_val}\n")
+
+            # Skip if already processed
+            if clean_up in processed_products:
+                continue
+
+            # Check if product belongs to another specific group. Only skip
+            # it when the Excel template does NOT contain a matching product/key.
+            if is_specific_group_product(clean_up, group_val):
+                if not product_matches_excel(clean_up):
+                    if debug:
+                        print(f"[DEBUG] Skipping '{name_raw}' - classified as specific group '{group_val}' and no Excel match found")
+                    continue
+                else:
+                    if debug:
+                        print(f"[DEBUG] Specific-group product '{name_raw}' has an Excel match; continuing processing")
+
+            # Only process if it's a DONUK product or in DONUK/BOREK group
+            is_donuk_product = ("CITIR MANTI" in clean_up or "ÇITIR MANTI" in clean_up or 
+                              "BOYOZ" in clean_up)
+            is_donuk_group = group_val in ("DONUK", "BOREK")
+
+            # Force to DONUK if present in force_set
+            if forced_flag:
+                is_donuk_product = True
+                if debug:
+                    print(f"[DEBUG] FORCED DONUK candidate detected: '{name_raw}' (force tokens matched)")
+
+            if not (is_donuk_product or is_donuk_group):
+                if debug:
+                    print(f"[DEBUG] Skipping '{name_raw}' - not a DONUK product/group")
+                continue
+
+            # Try to find best matching product
+            best_match = None
+            best_score = 0
+            
+            for excel_key in donuk_map.keys():
+                # Compare names after removing special characters
+                excel_clean = re.sub(r"[\(\{\}\)]", "", excel_key).strip()
+                
+                # Exact match first
+                if up == excel_clean:
+                    best_match = excel_key
+                    break
+
+                # Special case matches
+                if ("HAMBURGER" in up and "HAMBURGER" in excel_clean) or \
+                   ("KOFTE" in up and "KOFTE" in excel_clean) or \
+                   ("KÖFTE" in up and "KÖFTE" in excel_clean) or \
+                   ("SOS" in up and "SOS" in excel_clean) or \
+                   ("TAVUK" in up and "TAVUK" in excel_clean) or \
+                   ("MANTI" in up and "MANTI" in excel_clean) or \
+                   ("BOYOZ" in up and "BOYOZ" in excel_clean):
+                    score = 100 + len(set(up.split()) & set(excel_clean.split()))
+                    if score > best_score:
+                        best_match = excel_key
+                        best_score = score
+                        continue
+
+                # Partial match - look for shared significant words
+                name_words = set(word for word in up.split() if len(word) > 2)
+                excel_words = set(word for word in excel_clean.split() if len(word) > 2)
+                common_words = name_words & excel_words
+                
+                if common_words:
+                    # Enhanced scoring system
+                    base_score = len(common_words) * 10
+                    length_score = sum(len(word) for word in common_words)
+                    position_score = 5 if any(up.startswith(word) and excel_clean.startswith(word) for word in common_words) else 0
+                    
+                    # Special bonus for key product words
+                    key_word_bonus = 0
+                    key_words = ["CITIR", "ÇITIR", "DONUK", "MANTI", "BOYOZ", "SOS", "TAVUK", "KOFTE", "KÖFTE"]
+                    for word in common_words:
+                        if any(key in word for key in key_words):
+                            key_word_bonus += 15
+                    
+                    total_score = base_score + length_score + position_score + key_word_bonus
+                    
+                    if total_score > best_score:
+                        best_match = excel_key
+                        best_score = total_score
+
+            # If no best_match found but this row was forced, try a looser match using match_donuk_product
+            if not best_match and forced_flag:
+                mm = match_donuk_product(clean_up, donuk_map, debug=debug)
+                if mm:
+                    best_match = mm[0]
+                    if debug:
+                        print(f"[DEBUG] FORCED MATCH: found excel_key='{best_match}' via match_donuk_product for '{name_raw}'")
+
+            if best_match:
+                try:
+                    qty = float(str(r[miktar_col]).replace(",", "."))
+                except Exception:
+                    if debug:
+                        print(f"[DEBUG] DONUK WARNING: could not parse qty for '{name_raw}'")
+                    continue
+
+                if "MAKARON" in up:
+                    # Extract variant from parentheses or main text
+                    m = re.search(r"\(([^)]+)\)", name_raw)
+                    variant = normalize_text(m.group(1) if m else name_raw)
+                    # Normalize variant names
+                    variant_map = {
+                        "FRAMBUAZ": "FRAMBUAZLI",
+                        "HINDCEVIZ": "HINDCEVIZLI",
+                        "ANTEP": "ANTEPLI",
+                        "KARAMEL": "KARAMEL",
+                        "MERSIN": "MERSINLI"
+                    }
+                    # Find best matching variant key
+                    best_variant = None
+                    for k in variant_map:
+                        if k in variant:
+                            best_variant = variant_map[k]
+                            break
+                    if best_variant:
+                        # Only aggregate macaron quantities into the dedicated makaron_aggreg
+                        # and only if the Excel template actually contains that variant.
+                        if best_variant in makaron_map:
+                            makaron_aggreg[best_variant] = makaron_aggreg.get(best_variant, 0.0) + qty
+                        else:
+                            if debug:
+                                print(f"[DEBUG] MAKARON WARNING: Excel has no cell for variant '{best_variant}' (source='{name_raw}')")
+                            # don't treat makaron as donuk; skip
+                            continue
+                elif "HAMBURGER" in clean_up and "KOFTE" in clean_up and "MUTFAK" == group_val:
+                    donuk_key = "HAMBURGER KÖFTE"
+                    donuk_aggreg[donuk_key] = donuk_aggreg.get(donuk_key, 0.0) + qty
+                elif "SOSLU" in clean_up and "TAVUK" in clean_up and "MUTFAK" == group_val:
+                    donuk_key = "ACI-TATLI SOSLU TAVUK"
+                    donuk_aggreg[donuk_key] = donuk_aggreg.get(donuk_key, 0.0) + qty
+                elif best_match:
+                    donuk_aggreg[best_match] = donuk_aggreg.get(best_match, 0.0) + qty
+                matched += 1
+                if debug:
+                    print(f"[DEBUG] DONUK + {name_raw} -> product='{best_match}' qty={qty}")
+                # record forced hit for reporting (if this row was in force set)
+                if forced_flag:
+                    forced_hits.append({
+                        "csv_name": name_raw,
+                        "normalized": clean_up,
+                        "matched_key": best_match,
+                        "qty": qty,
+                    })
+
+        # After collecting quantities, update cells with space-separated format
+        for product_key, total_qty in donuk_aggreg.items():
+            target = None
+            
+            # First try donuk_map
+            target = donuk_map.get(product_key)
+            
+            # Then try makaron_map if not found
+            if not target:
+                target = makaron_map.get(product_key)
+                
+            if not target and debug:
+                print(f"[DEBUG] DONUK WARNING: no excel cell found for collected product '{product_key}'")
+                continue
+
+            row_idx, col_idx, orig_text = target
+            fmt_qty = int(total_qty) if float(total_qty).is_integer() else total_qty
+
+            try:
+                cell = ws.cell(row=row_idx, column=col_idx)
+                new_text = append_text_with_space(orig_text, fmt_qty)
+                
+                # Handle merged cells (use safe_write to reliably handle merges)
+                try:
+                    safe_write(ws, row_idx, col_idx, new_text)
+                except Exception:
+                    # best-effort: fall back to direct cell assignment
+                    try:
+                        ws.cell(row=row_idx, column=col_idx).value = new_text
+                    except Exception:
+                        pass
+
+                if debug:
+                    print(f"[DEBUG] DONUK TEXT WRITE r={row_idx} c={col_idx} val='{new_text}'")
+
+            except Exception as e:
+                if debug:
+                    print(f"[DEBUG] DONUK WRITE ERROR r={row_idx} c={col_idx} error={e}")
+
+    # Aggregate MAKARON entries from CSV: CSV usually has variant in parentheses (Makaron (ÇİKOLATALI))
+    if makaron_map:
+        for _, r in df.iterrows():
+            try:
+                name_raw = str(r[stok_col])
+            except Exception:
+                continue
+            up = normalize_text(name_raw)
+            grp_val = normalize_text(str(r.get(grup_col, ""))) if grup_col else ""
+            # skip rows already processed in the donuk pass
+            clean_up = re.sub(r"[\(\{\}\)]", "", up).strip()
+            if clean_up in processed_products:
+                continue
+            # detect makaron rows: name or group mentions MAKARON
+            if "MAKARON" not in up and "MAKARON" not in grp_val:
+                continue
+            
+            # Prepare candidate key from CSV name/group
+            csv_variant = None
+            # First try extracting from parentheses
+            m = re.search(r"\(([^)]+)\)", name_raw)
+
+            
+            # Normalize FISTIK spelling in parentheses
+            if m:
+                csv_variant = normalize_text(m.group(1))
+                
+                # Normalize FISTIK spelling (check for None first)
+                if csv_variant and ("FISTIK" in csv_variant or "FISTIKLI" in csv_variant):
+                    csv_variant = csv_variant.replace("FISTIKLI", "ANTEPLI").replace("FISTIK", "ANTEP")
+
+            # Try to find best matching variant
+            best_match = None
+            best_score = 0
+            
+            for excel_key, target in makaron_map.items():
+                if not excel_key:
+                    continue
+                    
+                # Compare CSV variant (if found) with Excel key
+                if csv_variant:
+                    # Exact match
+                    if csv_variant == excel_key:
+                        best_match = excel_key
+                        break
+                    # One contains the other (ignoring -LI suffix)
+                    csv_base = csv_variant.replace("LI", "").strip()
+                    excel_base = excel_key.replace("LI", "").strip()
+                    if csv_base in excel_base or excel_base in csv_base:
+                        if len(excel_base) > best_score:
+                            best_match = excel_key
+                            best_score = len(excel_base)
+                
+                # If no match yet, try normalized CSV name
+                if not best_match:
+                    # Remove common words and suffixes
+                    clean_name = up.replace("MAKARON", "").replace("LI", "").replace("LU", "").strip()
+                    clean_key = excel_key.replace("LI", "").replace("LU", "").strip()
+                    if clean_key in clean_name or clean_name in clean_key:
+                        if len(clean_key) > best_score:
+                            best_match = excel_key
+                            best_score = len(clean_key)
+            
+            variant_key = best_match if best_match else ""
+            
+            if not variant_key:
+                if debug:
+                    print(f"[DEBUG] MAKARON WARNING: could not determine variant for '{name_raw}'")
+                continue
+            
+            try:
+                qty = float(str(r[miktar_col]).replace(",", "."))
+            except Exception:
+                if debug:
+                    print(f"[DEBUG] DONUK WARNING: could not parse qty for '{name_raw}'")
+                continue
+            
+            # Update macaron aggregation (separate from donuk aggregation)
+            makaron_aggreg[best_match] = makaron_aggreg.get(best_match, 0.0) + qty
+            processed_products.add(clean_up)
+            matched += 1
+            if debug:
+                print(f"[DEBUG] MAKARON + {name_raw} -> variant='{best_match}' qty={qty}")
+
+        # After collecting all quantities, format and write text cells
+        for variant_key, total_qty in makaron_aggreg.items():
+            target = makaron_map.get(variant_key)
+            if not target:
+                if debug:
+                    print(f"[DEBUG] MAKARON WARNING: no excel cell found for collected variant '{variant_key}'")
+                continue
+            
+            row_idx, col_idx, orig_text = target
+            fmt_qty = int(total_qty) if float(total_qty).is_integer() else total_qty
+
+            # Use the existing cell's alignment for right-aligned text
+            try:
+                cell = ws.cell(row=row_idx, column=col_idx)
+                '''if not cell.alignment:
+                    cell.alignment = Alignment(horizontal='right')
+                '''
+                # Format consistently: preserve original text and append qty with space (user preference)
+                new_text = append_text_with_space(orig_text, fmt_qty)
+                
+                # Try master cell first if merged
+                master = None
+                merge = is_merged_at(ws, row_idx, col_idx)
+                if merge:
+                    master_r, master_c, _, _ = merge
+                    master = ws.cell(row=master_r, column=master_c)
+                
+                target_cell = master if master else cell
+                '''if target_cell.alignment:
+                    target_cell.alignment = Alignment(horizontal='right')'''
+                # Use safe_write so merged cells are handled consistently
+                try:
+                    safe_write(ws, row_idx, col_idx, new_text)
+                except Exception:
+                    try:
+                        ws.cell(row=row_idx, column=col_idx).value = new_text
+                    except Exception:
+                        pass
+                
+                if debug:
+                    print(f"[DEBUG] MAKARON TEXT WRITE r={row_idx} c={col_idx} val='{new_text}' aligned=right")
+                
+            except Exception as e:
+                if debug:
+                    print(f"[DEBUG] MAKARON WRITE ERROR r={row_idx} c={col_idx} val='{new_text}' error={e}")
 
     # Aggregate pasta entries from CSV into aggreg by mapping pasta type -> pasta_rows and size -> pasta_cols
     for _, r in df.iterrows():
@@ -971,14 +1983,14 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
             if debug:
                 print(f"[DEBUG] WRITE ERROR r={r_} c={cc} val={v} error={e}")
             # Try to write to master cell if merged
-            try:
-                master = master_cell(ws, r_, cc)
-                master.value = v
-                if debug:
-                    print(f"[DEBUG] MASTER WRITE r={r_} c={cc} val={v}")
-            except Exception as e2:
-                if debug:
-                    print(f"[DEBUG] MASTER WRITE ERROR r={r_} c={cc} val={v} error={e2}")
+                try:
+                    # Use safe_write to attempt writing into the master cell of the merge
+                    safe_write(ws, r_, cc, v)
+                    if debug:
+                        print(f"[DEBUG] MASTER WRITE r={r_} c={cc} val={v}")
+                except Exception as e2:
+                    if debug:
+                        print(f"[DEBUG] MASTER WRITE ERROR r={r_} c={cc} val={v} error={e2}")
 
     # Explicit matrix writes: clear touched cells, write aggregated, mirror ŞERBET per column
     if matrix_aggreg:
@@ -1006,8 +2018,7 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
                     print(f"[DEBUG] MATRIX WRITE ERROR r={rr} c={cc} val={v} error={e}")
                 # Try to write to master cell if merged
                 try:
-                    master = master_cell(ws, rr, cc)
-                    master.value = v
+                    safe_write(ws, rr, cc, v)
                     if debug:
                         print(f"[DEBUG] MATRIX MASTER WRITE r={rr} c={cc} val={v}")
                 except Exception as e2:
@@ -1043,14 +2054,16 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
                         continue
                     upv = normalize_text(val)
                     if "KUNEFE" in upv or "KÜNEFE" in upv:
-                        # Preserve left side, replace or append quantity after '=' if present
+                        # Preserve left side; append qty separated by spaces (do NOT use '=')
                         text = val
-                        if "=" in text:
-                            left, _sep, _right = text.partition("=")
-                            new_text = f"{left.strip()} = {fmt_qty}"
-                        else:
-                            new_text = f"{text.strip()} {fmt_qty}"
-                        ws.cell(row=r, column=c).value = new_text
+                        new_text = append_text_with_space(text, fmt_qty)
+                        try:
+                            safe_write(ws, r, c, new_text)
+                        except Exception:
+                            try:
+                                ws.cell(row=r, column=c).value = new_text
+                            except Exception:
+                                pass
                         if debug:
                             print(f"[DEBUG] KUNEFE TEXT WRITE r={r} c={c} val='{new_text}' (branch column)")
                         # Update only the first match
@@ -1087,14 +2100,16 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
                         continue
                     upv = normalize_text(val)
                     if "DONUK" in upv and ("TRILECE" in upv or "TRİLEÇE" in upv):
-                        # Preserve left side, replace or append quantity after '=' if present
+                        # Preserve left side; append qty separated by spaces (do NOT use '=')
                         text = val
-                        if "=" in text:
-                            left, _sep, _right = text.partition("=")
-                            new_text = f"{left.strip()} = {fmt_qty}"
-                        else:
-                            new_text = f"{text.strip()} {fmt_qty}"
-                        ws.cell(row=r, column=c).value = new_text
+                        new_text = append_text_with_space(text, fmt_qty)
+                        try:
+                            safe_write(ws, r, c, new_text)
+                        except Exception:
+                            try:
+                                ws.cell(row=r, column=c).value = new_text
+                            except Exception:
+                                pass
                         if debug:
                             print(f"[DEBUG] TRİLEÇE TEXT WRITE r={r} c={c} val='{new_text}' (branch column)")
                         # Update only the first match
@@ -1132,14 +2147,16 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
                         continue
                     upv = normalize_text(val)
                     if "SERBET" in upv or "ŞERBET" in upv:
-                        # Preserve left side, replace or append quantity after '=' if present
+                        # Preserve left side; append qty separated by spaces (do NOT use '=')
                         text = val
-                        if "=" in text:
-                            left, _sep, _right = text.partition("=")
-                            new_text = f"{left.strip()} = {fmt_qty}"
-                        else:
-                            new_text = f"{text.strip()} {fmt_qty}"
-                        ws.cell(row=r, column=c).value = new_text
+                        new_text = append_text_with_space(text, fmt_qty)
+                        try:
+                            safe_write(ws, r, c, new_text)
+                        except Exception:
+                            try:
+                                ws.cell(row=r, column=c).value = new_text
+                            except Exception:
+                                pass
                         if debug:
                             print(f"[DEBUG] ŞERBET TEXT WRITE r={r} c={c} val='{new_text}' (branch column)")
                         # Update only the first match
@@ -1177,14 +2194,16 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
                         continue
                     upv = normalize_text(val)
                     if "ROKOKO" in upv:
-                        # Preserve left side, replace or append quantity after '=' if present
+                        # Preserve left side; consistently format as 'LEFT = qty'
                         text = val
-                        if "=" in text:
-                            left, _sep, _right = text.partition("=")
-                            new_text = f"{left.strip()} = {fmt_qty}"
-                        else:
-                            new_text = f"{text.strip()} {fmt_qty}"
-                        ws.cell(row=r, column=c).value = new_text
+                        new_text = format_text_with_qty(text, fmt_qty)
+                        try:
+                            safe_write(ws, r, c, new_text)
+                        except Exception:
+                            try:
+                                ws.cell(row=r, column=c).value = new_text
+                            except Exception:
+                                pass
                         if debug:
                             print(f"[DEBUG] MEYVELI ROKOKO TEXT WRITE r={r} c={c} val='{new_text}' (branch column)")
                         # Update only the first match
@@ -1221,14 +2240,16 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
                         continue
                     upv = normalize_text(val)
                     if "EKLER" in upv:
-                        # Preserve left side, replace or append quantity after '=' if present
+                        # Preserve left side; consistently format as 'LEFT = qty'
                         text = val
-                        if "=" in text:
-                            left, _sep, _right = text.partition("=")
-                            new_text = f"{left.strip()} = {fmt_qty}"
-                        else:
-                            new_text = f"{text.strip()} {fmt_qty}"
-                        ws.cell(row=r, column=c).value = new_text
+                        new_text = format_text_with_qty(text, fmt_qty)
+                        try:
+                            safe_write(ws, r, c, new_text)
+                        except Exception:
+                            try:
+                                ws.cell(row=r, column=c).value = new_text
+                            except Exception:
+                                pass
                         if debug:
                             print(f"[DEBUG] EKLER TEXT WRITE r={r} c={c} val='{new_text}' (branch column)")
                         # Update only the first match
@@ -1241,6 +2262,12 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
                 print(f"[DEBUG] EKLER - No branch columns found for '{branch_name}'")
 
     wb.save(output_path)
+    # If forced hits were collected, print a concise report for the trial
+    if forced_hits:
+        print("\n[FORCED-DONUK REPORT] The following CSV rows were treated as forced donuk candidates and matched:")
+        for fh in forced_hits:
+            print(f" - CSV: '{fh.get('csv_name')}' -> Matched Excel Key: '{fh.get('matched_key')}' Qty: {fh.get('qty')}")
+
     print(f"[DONUK] Dondurmalar yazıldı: {len(aggreg)} hücre, {matched} kalem -> {output_path}")
     return (matched, 0)
 
@@ -1499,14 +2526,35 @@ def process_csv(csv_path: str, output_path: str = "sevkiyat_tatlı.xlsx") -> Tup
 def process_all(csv_path: str,
                 tatli_output: str = "sevkiyat_tatlı.xlsx",
                 donuk_output: str = "sevkiyat_donuk.xlsx",
-                lojistik_output: str = "sevkiyat_lojistik.xlsx"):
-    m2, u2 = process_donuk_csv(csv_path, output_path=donuk_output)
-    return {"donuk": {"matched": m2, "unmatched": u2, "file": donuk_output}}
+                lojistik_output: str = "sevkiyat_lojistik.xlsx",
+                debug: bool = False,
+                force_donuk: Optional[Iterable[str]] = None):
+    # process_donuk_csv now accepts an optional iterable of forced donuk candidate names
+    result = process_donuk_csv(csv_path, output_path=donuk_output, debug=debug, force_donuk=force_donuk)
+    # process_donuk_csv returns (matched, 0) by default; keep compatibility
+    if isinstance(result, tuple) or isinstance(result, list):
+        matched = result[0]
+    else:
+        matched = 0
+    return {"donuk": {"matched": matched, "unmatched": 0, "file": donuk_output}}
 
 if __name__ == "__main__":
     import sys
     if len(sys.argv) < 2:
-        print("Kullanım: python parse_gptfix.py <csv_yolu>")
+        print("Kullanım: python parse_gptfix.py <csv_yolu> [--debug]")
         raise SystemExit(1)
-    summary = process_all(sys.argv[1])
+    csv_path = sys.argv[1]
+    debug_flag = "--debug" in sys.argv or "-d" in sys.argv
+    # Parse optional forced donuk list: --force-donuk "MANTI, PATATES, ..."
+    force_list = None
+    if "--force-donuk" in sys.argv:
+        try:
+            idx = sys.argv.index("--force-donuk")
+            if idx + 1 < len(sys.argv):
+                raw = sys.argv[idx + 1]
+                # split by comma
+                force_list = [s.strip() for s in raw.split(",") if s.strip()]
+        except Exception:
+            force_list = None
+    summary = process_all(csv_path, debug=debug_flag, force_donuk=force_list)
     print(summary)

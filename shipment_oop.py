@@ -15,17 +15,20 @@ class TextNormalizer:
         if s is None:
             return ""
         s = str(s)
-        try:
-            import unicodedata
-            s = unicodedata.normalize("NFKD", s)
-        except Exception:
-            pass
+        # First apply Turkish character mapping BEFORE normalization
         tr_map = str.maketrans({
             "ı": "i", "ğ": "g", "ü": "u", "ş": "s", "ö": "o", "ç": "c",
             "İ": "I", "Ğ": "G", "Ü": "U", "Ş": "S", "Ö": "O", "Ç": "C",
         })
         s = s.translate(tr_map)
-        s = s.upper().strip()
+        s = s.upper()
+        # Then normalize unicode
+        try:
+            import unicodedata
+            s = unicodedata.normalize("NFKD", s)
+        except Exception:
+            pass
+        s = s.strip()
         return s
 
 # Constants
@@ -37,6 +40,32 @@ IZMIR_BRANCHES = [
 ]
 IZMIR_BRANCH_HINTS = [TextNormalizer.up(b) for b in IZMIR_BRANCHES]
 KUŞADASI_HINTS = ["KUSADASI", "KUŞADASI", "AYDIN"]
+
+# Birden fazla sevkiyat günü olan şubeler ve hangi Excel sayfalarında bulundukları
+# Format: {branch_normalized: [list of possible sheet names]}
+MULTI_DAY_BRANCHES = {
+    "MAVIBAHCE": ["SALI KARŞIYAKA", "KSK CUMARTESİ"],
+    "FORUM": ["SALI KARŞIYAKA", "GÜZELBAHÇE", "KSK CUMARTESİ"],
+    "FOLKART": ["SALI KARŞIYAKA", "CUMA İZMİR"],
+    "EFESUS": ["SALI KARŞIYAKA", "CUMA İZMİR"],
+    "ISTASYON": ["SALI İZMİR", "KSK CUMARTESİ"],
+    "GAZIEMIR": ["SALI İZMİR", "CUMA İZMİR"],
+    "BALCOVA": ["SALI İZMİR", "CUMA İZMİR"],
+    "HATAY": ["SALI İZMİR", "CUMA İZMİR"],
+    "FOLKART VEGA": ["SALI İZMİR", "CUMA İZMİR"],
+    "KUSADASI": ["KUŞADASI-AYDIN", "KUŞADASI CMERT"],
+}
+
+# Sheet name mapping for user-friendly display
+SHEET_NAME_MAPPING = {
+    "Salı Karşıyaka": "SALI KARŞIYAKA",
+    "Salı İzmir": "SALI İZMİR",
+    "Cuma İzmir": "CUMA İZMİR",
+    "Cumartesi KSK": "KSK CUMARTESİ",
+    "Güzelbahçe": "GÜZELBAHÇE",
+    "Kuşadası-Aydın": "KUŞADASI-AYDIN",
+    "Kuşadası Çmert": "KUŞADASI CMERT",
+}
 
 
 # ------------------ CSV Reader ------------------
@@ -123,6 +152,14 @@ class BranchDecisionEngine:
         if any(h in up for h in IZMIR_BRANCH_HINTS):
             return "IZMIR"
         return "GENEL"
+    
+    def requires_day_selection(self) -> bool:
+        """Check if this branch appears in multiple sheets (needs day selection)."""
+        return self.branch_up in MULTI_DAY_BRANCHES
+    
+    def get_possible_sheets(self) -> List[str]:
+        """Get list of possible sheet names for this branch."""
+        return MULTI_DAY_BRANCHES.get(self.branch_up, [])
 
 
 # ------------------ Writers ------------------
@@ -315,6 +352,29 @@ class ImprovedLojistikWriter(LojistikTemplateWriter):
         # If no specific sheet found, use the first available sheet
         if self.wb.worksheets:
             self.ws = self.wb.worksheets[0]
+    
+    def _find_sheet_for_branch(self, branch_name: str):
+        """Find the Excel sheet that contains a column matching branch_name."""
+        assert self.wb is not None
+        
+        branch_up = TextNormalizer.up(branch_name)
+        
+        # Search all sheets for a column matching the branch
+        for ws in self.wb.worksheets:
+            # Check first 3 rows for branch headers
+            for r in range(1, 4):
+                for c in range(1, min(ws.max_column + 1, 30)):
+                    val = ws.cell(r, c).value
+                    if not val:
+                        continue
+                    val_up = TextNormalizer.up(str(val))
+                    
+                    # Check if branch matches (exact or partial)
+                    if branch_up == val_up or branch_up in val_up or val_up in branch_up:
+                        return ws
+        
+        # If not found, return current sheet
+        return self.ws
 
     def _find_or_add_branch_col(self, branch_name: str) -> int:
         assert self.ws is not None
@@ -360,10 +420,16 @@ class ImprovedLojistikWriter(LojistikTemplateWriter):
         return col
 
     def append_text_items(self, branch_name: str, items: Iterable[str]) -> int:
-        assert self.ws is not None
+        assert self.ws is not None and self.wb is not None
         
         # Use canonical branch name for better matching
         canonical_branch = self._canonical_branch(branch_name)
+        
+        # Find the correct sheet for this branch
+        correct_sheet = self._find_sheet_for_branch(canonical_branch)
+        if correct_sheet != self.ws:
+            self.ws = correct_sheet
+        
         col = self._find_or_add_branch_col(canonical_branch)
         
         # Find first empty row below header, skipping merged regions
@@ -466,12 +532,15 @@ class ShipmentCoordinator:
                 with open(path, encoding="utf-8") as f:
                     for line in f:
                         up = TextNormalizer.up(line)
-                        if "SUBE KODU" in up:
+                        # Match "SUBE KODU", "SUBE KODU-ADI", "SUBE ADI", etc.
+                        if "SUBE" in up and ("KODU" in up or "ADI" in up):
                             raw = line.split(":", 1)[-1] if ":" in line else line
-                            # e.g. "242 - BALÇOVA" or "421 - İZMİR(GÜZELBAHÇE)"
+                            # e.g. "242 - BALÇOVA" or "187 - ANKARA(KIZILAY)"
                             part = raw.split("-", 1)[-1] if "-" in raw else raw
                             part = part.strip()
-                            # If parens exist, prefer the inner content (İZMİR(GÜZELBAHÇE) -> GÜZELBAHÇE)
+                            # Remove quotes if present
+                            part = part.strip('"').strip("'").strip()
+                            # If parens exist, prefer the inner content (ANKARA(KIZILAY) -> KIZILAY)
                             import re
                             m = re.search(r"\(([^)]+)\)", part)
                             if m:
