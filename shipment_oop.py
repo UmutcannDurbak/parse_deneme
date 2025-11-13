@@ -354,12 +354,32 @@ class ImprovedLojistikWriter(LojistikTemplateWriter):
             self.ws = self.wb.worksheets[0]
     
     def _find_sheet_for_branch(self, branch_name: str):
-        """Find the Excel sheet that contains a column matching branch_name."""
+        """Find the Excel sheet that contains a column matching branch_name.
+        Respects pre-selected sheet from day selection (self.ws already set in load())."""
         assert self.wb is not None
         
-        branch_up = TextNormalizer.up(branch_name)
+        # CRITICAL: If user selected a specific sheet via day selection,
+        # don't override it by searching all sheets. Check if branch exists in current sheet first.
+        if self.sheet_name and self.ws:
+            branch_up = TextNormalizer.up(branch_name)
+            # Check if branch exists in the currently selected sheet
+            for r in range(1, 4):
+                for c in range(1, min(self.ws.max_column + 1, 30)):
+                    val = self.ws.cell(r, c).value
+                    if not val:
+                        continue
+                    val_up = TextNormalizer.up(str(val))
+                    
+                    # Check if branch matches (exact or partial)
+                    if branch_up == val_up or branch_up in val_up or val_up in branch_up:
+                        # Branch found in user-selected sheet, use it!
+                        return self.ws
+            # If branch NOT found in user-selected sheet, log warning but respect user choice
+            # This handles cases where user explicitly chose a sheet for multi-day branches
+            return self.ws
         
-        # Search all sheets for a column matching the branch
+        # No user selection: search all sheets for branch match
+        branch_up = TextNormalizer.up(branch_name)
         for ws in self.wb.worksheets:
             # Check first 3 rows for branch headers
             for r in range(1, 4):

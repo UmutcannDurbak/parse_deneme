@@ -326,6 +326,86 @@ def _clear_cell_preserve_merge(ws, row, col, clear_formulas=False):
         return True
     return False
 
+def show_day_selection_dialog(branch_name, possible_sheets):
+    """Show a modal dialog for day selection with radio buttons.
+    
+    Returns:
+        Selected sheet name or None if cancelled
+    """
+    dialog = tk.Toplevel()
+    dialog.title("Gün Seçimi Gerekli")
+    dialog.geometry("450x300")
+    dialog.resizable(False, False)
+    dialog.grab_set()  # Modal dialog
+    
+    # Center the dialog on screen
+    dialog.update_idletasks()
+    x = (dialog.winfo_screenwidth() // 2) - (450 // 2)
+    y = (dialog.winfo_screenheight() // 2) - (300 // 2)
+    dialog.geometry(f"+{x}+{y}")
+    
+    selected_sheet = tk.StringVar(value="")
+    
+    # Header with icon and message
+    header_frame = tk.Frame(dialog, bg="#FFF3CD", pady=15)
+    header_frame.pack(fill="x", padx=0, pady=0)
+    
+    icon_label = tk.Label(header_frame, text="⚠️", font=("Arial", 24), bg="#FFF3CD")
+    icon_label.pack(side="left", padx=15)
+    
+    msg_text = f"'{branch_name}' şubesi birden fazla sevkiyat gününde bulunuyor.\nLütfen hangi gün için işlem yapmak istediğinizi seçin:"
+    msg_label = tk.Label(header_frame, text=msg_text, font=("Arial", 10), bg="#FFF3CD", justify="left")
+    msg_label.pack(side="left", padx=5)
+    
+    # Radio button frame
+    radio_frame = tk.Frame(dialog, pady=20)
+    radio_frame.pack(fill="both", expand=True, padx=30)
+    
+    tk.Label(radio_frame, text="Sevkiyat Günü:", font=("Arial", 10, "bold")).pack(anchor="w", pady=(0, 10))
+    
+    for sheet in possible_sheets:
+        rb = tk.Radiobutton(
+            radio_frame, 
+            text=sheet, 
+            variable=selected_sheet, 
+            value=sheet,
+            font=("Arial", 10),
+            anchor="w"
+        )
+        rb.pack(anchor="w", pady=5, padx=20)
+    
+    # Button frame
+    btn_frame = tk.Frame(dialog, pady=15)
+    btn_frame.pack(fill="x", padx=30, side="bottom")
+    
+    result = [None]  # Use list to store result (closure workaround)
+    
+    def on_ok():
+        if selected_sheet.get():
+            result[0] = selected_sheet.get()
+            dialog.destroy()
+        else:
+            messagebox.showwarning("Uyarı", "Lütfen bir gün seçin!", parent=dialog)
+    
+    def on_cancel():
+        result[0] = None
+        dialog.destroy()
+    
+    ok_btn = tk.Button(btn_frame, text="✓ Tamam", command=on_ok, width=12, bg="#28A745", fg="white", font=("Arial", 10, "bold"))
+    ok_btn.pack(side="right", padx=5)
+    
+    cancel_btn = tk.Button(btn_frame, text="✗ İptal", command=on_cancel, width=12, font=("Arial", 10))
+    cancel_btn.pack(side="right", padx=5)
+    
+    # Set focus to first radio button
+    dialog.focus_set()
+    
+    # Wait for dialog to close
+    dialog.wait_window()
+    
+    return result[0]
+
+
 def run_process(csv_path, status_label, log_widget, izmir_day_var=None):
     try:
         log_lines = []
@@ -375,13 +455,21 @@ def run_process(csv_path, status_label, log_widget, izmir_day_var=None):
                 engine = BranchDecisionEngine(branch_name)
                 if engine.requires_day_selection() and not sheet_hint:
                     possible_sheets = engine.get_possible_sheets()
-                    msg = (f"⚠️ '{branch_name}' şubesi birden fazla sevkiyat gününde var!\n"
-                           f"Lütfen gün seçimi yapın: {', '.join(possible_sheets)}")
-                    log_widget.insert(tk.END, f"[WARN] {msg}\n")
-                    status_label.config(text="⚠️ Gün seçimi gerekli!")
-                    messagebox.showwarning("Gün Seçimi Gerekli", msg)
-                    return
-                elif sheet_hint:
+                    log_widget.insert(tk.END, f"[INFO] '{branch_name}' şubesi için gün seçimi gerekli.\n")
+                    log_widget.see(tk.END)
+                    
+                    # Show modal dialog for day selection
+                    selected_day = show_day_selection_dialog(branch_name, possible_sheets)
+                    
+                    if not selected_day:
+                        status_label.config(text="❌ İşlem iptal edildi (gün seçilmedi)")
+                        log_widget.insert(tk.END, "[INFO] Kullanıcı gün seçimini iptal etti.\n")
+                        return
+                    
+                    sheet_hint = selected_day
+                    log_widget.insert(tk.END, f"[INFO] Seçilen gün: {selected_day}\n")
+                    
+                if sheet_hint:
                     # Map user-friendly name to actual sheet name
                     sheet_hint = SHEET_NAME_MAPPING.get(sheet_hint, sheet_hint)
         except Exception as e:

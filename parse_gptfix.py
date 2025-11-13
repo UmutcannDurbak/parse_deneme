@@ -201,16 +201,65 @@ def locate_donuk_products_block(ws: openpyxl.worksheet.worksheet.Worksheet, min_
         "EKSI MAYALI TOST EKMEGI",
         "ZERDECALLI TOST EKMEGI"
     ]
-        
+    
+    # CRITICAL FIX: Find DONUK section header first to avoid matching products in wrong sections
+    donuk_header_row = None
+    for r in range(1, min(ws.max_row + 1, 100)):
+        for c in range(1, min(ws.max_column + 1, 5)):  # Check first few columns for section headers
+            v = ws.cell(row=r, column=c).value
+            if not v or not isinstance(v, str):
+                continue
+            up_v = normalize_text(v)
+            # Look for DONUK section marker (DONUK, DONUK ÜRÜNLER, etc.)
+            if "DONUK" in up_v and "DONDURMA" not in up_v:
+                donuk_header_row = r
+                if debug:
+                    print(f"[DEBUG] Found DONUK section header at row {r}: '{v}'")
+                break
+        if donuk_header_row:
+            break
+    
+    # If DONUK header not found, default to row 10 (avoid scanning header rows)
+    if not donuk_header_row:
+        donuk_header_row = 10
+        if debug:
+            print(f"[DEBUG] No DONUK header found, defaulting to row {donuk_header_row}")
+    
     # Determine column range to scan - use branch span (min_c to max_c) to catch all products
     # This ensures we find products in adjacent columns (e.g., MANTI at c=12 when BOYOZ is at c=10)
     scan_min_c = min(branch_cols) if branch_cols else min_c
     scan_max_c = max(branch_cols) + 6 if branch_cols else max_c  # Scan a few columns beyond branch
     
-    # Look for products in branch span (not just branch columns)
-    for r in range(1, ws.max_row + 1):
+    # ONLY scan rows BELOW the DONUK header (and within reasonable range)
+    scan_start_row = donuk_header_row + 1
+    scan_end_row = min(ws.max_row + 1, donuk_header_row + 50)  # Scan next 50 rows max
+    
+    if debug:
+        print(f"[DEBUG] Scanning for DONUK products in rows {scan_start_row}-{scan_end_row}, cols {scan_min_c}-{scan_max_c}")
+    
+    # Look for products in branch span (not just branch columns), but ONLY below DONUK header
+    for r in range(scan_start_row, scan_end_row):
         for c in range(scan_min_c, min(scan_max_c + 1, ws.max_column + 1)):
-            v = ws.cell(row=r, column=c).value
+            try:
+                # Safe cell value access - handle merged cells
+                cell = ws.cell(row=r, column=c)
+                v = cell.value
+            except AttributeError:
+                # MergedCell object - try to get master cell value
+                try:
+                    # Find master cell of this merged range
+                    for mr in ws.merged_cells.ranges:
+                        min_row, min_col, max_row, max_col = mr.bounds
+                        if min_row <= r <= max_row and min_col <= c <= max_col:
+                            v = ws.cell(row=min_row, column=min_col).value
+                            break
+                    else:
+                        v = None
+                except Exception:
+                    v = None
+            except Exception:
+                v = None
+                
             if not v or not isinstance(v, str):
                 continue
             
