@@ -30,7 +30,7 @@ except ImportError:
 
 # PyInstaller ile build ederken .ico dosyasını eklemeyi unutmayın!
 ICON_PATH = "appicon.ico"
-VERSION = "v1.3.1"
+VERSION = "v1.3.3"
 DEVELOPER = "Developer U.D"
 
 # Güncelleme ayarları
@@ -842,26 +842,12 @@ def main():
     label = tk.Label(root, text=info, wraplength=700, justify="left")
     label.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 0))
 
-    # İzmir/Kuşadası gün seçimi (opsiyonel)
-    izmir_day_var = tk.StringVar(value="Seçim yok")
-    days = [
-        "Seçim yok",
-        "Salı Karşıyaka",
-        "Salı İzmir",
-        "Cuma İzmir",
-        "Cumartesi KSK",
-        "Güzelbahçe",
-        "Kuşadası-Aydın",
-        "Kuşadası Çmert",
-    ]
-    day_frame = tk.Frame(root)
-    day_frame.grid(row=1, column=0, pady=(6, 0), sticky="w")
-    tk.Label(day_frame, text="Hedef Sayfa (İzmir/Kuşadası): ").pack(side=tk.LEFT)
-    tk.OptionMenu(day_frame, izmir_day_var, *days).pack(side=tk.LEFT)
+    # Gün seçimi artık otomatik modal dialog ile yapılıyor - eski dropdown kaldırıldı
+    izmir_day_var = None  # Compatibility için None olarak bırak
 
     # Butonlar için yeni bir frame, ortalanmış ve infonun hemen altında
     btn_frame = tk.Frame(root)
-    btn_frame.grid(row=2, column=0, pady=(10, 5))
+    btn_frame.grid(row=1, column=0, pady=(10, 5))
     btn_frame.grid_columnconfigure(0, weight=1)
     btn_frame.grid_columnconfigure(1, weight=1)
     btn_frame.grid_columnconfigure(2, weight=1)
@@ -912,7 +898,7 @@ def main():
     update_btn.grid(row=1, column=0, padx=4, pady=(5, 0))
     # Open buttons
     open_frame = tk.Frame(root)
-    open_frame.grid(row=5, column=0, pady=(4, 8))
+    open_frame.grid(row=4, column=0, pady=(4, 8))
     def mk(btn_text, path):
         return tk.Button(open_frame, text=btn_text, width=22, command=lambda p=path: open_file(p))
     mk("Tatlı Dosyasını Aç", "sevkiyat_tatlı.xlsx").grid(row=0, column=0, padx=5)
@@ -920,10 +906,10 @@ def main():
     mk("Lojistik Dosyasını Aç", "sevkiyat_lojistik.xlsx").grid(row=0, column=2, padx=5)
 
     status_label = tk.Label(root, text="", fg="blue", anchor="w")
-    status_label.grid(row=3, column=0, sticky="ew", padx=10, pady=5)
+    status_label.grid(row=2, column=0, sticky="ew", padx=10, pady=5)
 
     log_widget = scrolledtext.ScrolledText(root, state='normal')
-    log_widget.grid(row=4, column=0, sticky="nsew", padx=10, pady=10)
+    log_widget.grid(row=3, column=0, sticky="nsew", padx=10, pady=10)
     log_widget.update_idletasks()
 
     # Sürükle-bırak desteği (tkinterdnd2 ile)

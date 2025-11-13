@@ -68,6 +68,7 @@ check_*.py
 debug_*.py
 verify_*.py
 analyze_*.py
+auto_*.py
 
 # Icon and packaging helpers
 appicon.ico

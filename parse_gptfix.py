@@ -290,12 +290,22 @@ def locate_donuk_products_block(ws: openpyxl.worksheet.worksheet.Worksheet, min_
                     if target in res:
                         continue
                     
-                    # Handle merged cells
+                    # CRITICAL FIX: Skip horizontally-merged header cells
+                    # Product labels should be in single cells or vertically-merged cells only.
+                    # Horizontally-merged cells (spanning multiple columns) are typically headers.
                     merge = is_merged_at(ws, r, c)
                     if merge:
-                        master_r, master_c, _, _ = merge
-                        cell = ws.cell(row=master_r, column=master_c)
-                        r, c = master_r, master_c
+                        master_r, master_c, max_merge_r, max_merge_c = merge
+                        # Check if this is a horizontal merge (spans multiple columns)
+                        if max_merge_c > master_c:
+                            # This is a horizontally-merged header cell, skip it
+                            if debug:
+                                print(f"[DEBUG] Skipping horizontally-merged header at r={r} c={c} for '{target}' (merge spans cols {master_c}-{max_merge_c})")
+                            continue
+                        # For vertically-merged cells: Keep the CURRENT row position (r)
+                        # This ensures each product in a vertical list gets its own row number
+                        # even if they share a merged cell horizontally
+                        cell = ws.cell(row=r, column=c)
                     else:
                         cell = ws.cell(row=r, column=c)
                     
@@ -500,6 +510,24 @@ def find_size_columns(ws: openpyxl.worksheet.worksheet.Worksheet, min_c: int, ma
     return sizes
 
 
+def safe_cell_value(ws: openpyxl.worksheet.worksheet.Worksheet, r: int, c: int):
+    """Safely get cell value, handling MergedCell objects."""
+    try:
+        return ws.cell(row=r, column=c).value
+    except AttributeError:
+        # MergedCell - find master cell
+        try:
+            for mr in ws.merged_cells.ranges:
+                min_row, min_col, max_row, max_col = mr.bounds
+                if min_row <= r <= max_row and min_col <= c <= max_col:
+                    return ws.cell(row=min_row, column=min_col).value
+        except Exception:
+            pass
+        return None
+    except Exception:
+        return None
+
+
 def locate_dondurmalar_block(ws: openpyxl.worksheet.worksheet.Worksheet, min_c: int, max_c: int, debug: bool = False) -> Tuple[int, Dict[str, int]]:
     """Find the 'DONDURMALAR' header row and the size columns on that row within (min_c..max_c, plus small right margin).
     Returns: (header_row_index, size_columns dict with keys '35KG','350GR','150GR', and 'MONO','KUCUK','BUYUK').
@@ -509,7 +537,7 @@ def locate_dondurmalar_block(ws: openpyxl.worksheet.worksheet.Worksheet, min_c: 
     all_pasta_rows = []  # Pasta başlıkları için tüm satırları tut
 
     for r in range(1, min(ws.max_row, 100) + 1):
-        v = ws.cell(row=r, column=1).value
+        v = safe_cell_value(ws, r, 1)
         if not v:
             continue
         up = normalize_text(v)
@@ -530,7 +558,7 @@ def locate_dondurmalar_block(ws: openpyxl.worksheet.worksheet.Worksheet, min_c: 
             # Bu satırdan önceki 2 satırı kontrol et - MONO/KÜÇÜK/BÜYÜK başlıkları burada olmalı
             for r in range(max(1, first_pasta_row - 2), first_pasta_row + 1):
                 for c in range(min_c, max_c + 1):
-                    v = ws.cell(row=r, column=c).value
+                    v = safe_cell_value(ws, r, c)
                     if not v:
                         continue
                     up = normalize_text(v)
@@ -556,7 +584,7 @@ def locate_dondurmalar_block(ws: openpyxl.worksheet.worksheet.Worksheet, min_c: 
                 print(f"[DEBUG] Checking rows {check_rows} for pasta columns in cols {min_c}-{max_c}")
             for rr in check_rows:
                 for c in range(min_c, max_c + 1):
-                    v = ws.cell(row=rr, column=c).value
+                    v = safe_cell_value(ws, rr, c)
                     if not v:
                         continue
                     up = normalize_text(v)
@@ -613,7 +641,7 @@ def locate_makaron_block(ws: openpyxl.worksheet.worksheet.Worksheet, min_c: int,
     # find MAKARON header within branch span in first 100 rows
     for r in range(1, min(100, ws.max_row) + 1):
         for c in range(min_c, max_c + 1):  # Only scan within branch span
-            v = ws.cell(row=r, column=c).value
+            v = safe_cell_value(ws, r, c)
             if not v:
                 continue
             if normalize_text(v) == "MAKARON":
@@ -2322,9 +2350,10 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
 
 # Minimal placeholder for compatibility
 
-def process_csv(csv_path: str, output_path: str = "sevkiyat_tatlı.xlsx") -> Tuple[int, int]:
+def process_csv(csv_path: str, output_path: str = "sevkiyat_tatlı.xlsx", sheet_name: Optional[str] = None) -> Tuple[int, int]:
     # Restore legacy Tatlı writer: reads CSV 'TATLI' items and writes to sevkiyat_tatlı.xlsx template
     # using the branch columns (TEPSI/ADET) and product rows discovered at runtime.
+    # CRITICAL: sheet_name parameter for multi-day branch support
     # Helpers specific to Tatlı flow
     def normalize_text_strict(s):
         return normalize_text(s).replace(" ", "")
@@ -2389,9 +2418,36 @@ def process_csv(csv_path: str, output_path: str = "sevkiyat_tatlı.xlsx") -> Tup
             return True
         ex_strict = normalize_text_strict(excel_ad)
         csv_strict = normalize_text_strict(csv_ad)
+        
+        # CRITICAL: TAVUK GÖĞSÜ vs TAVUK GÖĞSÜLÜ KAZANDİBİ distinction
+        # These products must NEVER match each other - they are completely different items
+        if "TAVUKGOGSU" in ex_strict and "TAVUKGOGSU" in csv_strict:
+            # Both contain TAVUKGOGSU - check if one is plain and other is KAZANDIBI
+            ex_has_kaz = "KAZANDIBI" in ex_strict or "KAZ" in ex_strict
+            csv_has_kaz = "KAZANDIBI" in csv_strict or "KAZ" in csv_strict
+            
+            # If mismatch (one has KAZ, other doesn't), DO NOT match
+            if ex_has_kaz != csv_has_kaz:
+                return False
+            
+            # If both have KAZ, allow match
+            if ex_has_kaz and csv_has_kaz:
+                return True
+            
+            # If neither has KAZ (both plain TAVUK GÖĞSÜ), allow match only if CSV doesn't have KAZANDIBI/KAZ
+            # This prevents "TAVUK GÖĞSÜ" Excel from matching "TAVUK GÖĞSÜLÜ KAZANDİBİ" CSV
+            if not ex_has_kaz and not csv_has_kaz:
+                return True
+        
+        # Original special case for TAVUK GÖĞSÜLÜ KAZANDİBİ matching
         if "TAVUKGOGSUKAZ" in ex_strict and "TAVUKGOGSUKAZANDIBI" in csv_strict:
             return True
+        
+        # General substring matching - but exclude TAVUKGOGSU to prevent cross-matching
         if (ex_strict in csv_strict or csv_strict in ex_strict) and ("KAZ" not in ex_strict and "KAZANDIBI" not in ex_strict):
+            # Additional safety: if Excel has TAVUKGOGSU, CSV must not have KAZANDIBI
+            if "TAVUKGOGSU" in ex_strict and ("KAZANDIBI" in csv_strict or "KAZ" in csv_strict):
+                return False
             return True
         return False
 
@@ -2428,10 +2484,28 @@ def process_csv(csv_path: str, output_path: str = "sevkiyat_tatlı.xlsx") -> Tup
     wb = load_workbook(output_path)
 
     # Doğru sheet'i ve şube sütunlarını bul (2. satırda şube başlıkları)
+    # CRITICAL: If sheet_name provided, search ONLY in that sheet (multi-day branch support)
     ws = None
     col_tepsi = None
     col_adet = None
-    for w in wb.worksheets:
+    
+    # Determine which sheets to search
+    sheets_to_search = []
+    if sheet_name:
+        # User specified a sheet - use ONLY that sheet
+        sheet_name_norm = normalize_text(sheet_name)
+        for w in wb.worksheets:
+            if normalize_text(w.title) == sheet_name_norm or normalize_text(w.title) in sheet_name_norm or sheet_name_norm in normalize_text(w.title):
+                sheets_to_search.append(w)
+                break
+        if not sheets_to_search:
+            # Fallback: if exact match failed, use first sheet
+            sheets_to_search = [wb.worksheets[0]]
+    else:
+        # No sheet specified - search all sheets
+        sheets_to_search = wb.worksheets
+    
+    for w in sheets_to_search:
         subeler = {}
         # row=2, columns after first
         for cell in w[2][1:]:
@@ -2444,7 +2518,9 @@ def process_csv(csv_path: str, output_path: str = "sevkiyat_tatlı.xlsx") -> Tup
                     "adet_2": cell.column + 3,
                 }
         for sname, cols in subeler.items():
-            if sname == sube_norm:
+            # Fuzzy matching: exact match OR partial match (like donuk processing)
+            # This handles cases like CSV "FORUM AVM" vs Excel "FORUM" or CSV "MEYDAN" vs Excel "MEYDAN AVM"
+            if sname == sube_norm or sube_norm in sname or sname in sube_norm:
                 ws = w
                 col_tepsi = cols["tepsi"]
                 col_adet = cols["adet"]

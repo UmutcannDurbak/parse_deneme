@@ -484,7 +484,76 @@ class ImprovedLojistikWriter(LojistikTemplateWriter):
         written = 0
         for t in items:
             if t and str(t).strip():
-                self.ws.cell(row=row, column=col, value=str(t).strip())
+                cell = self.ws.cell(row=row, column=col)
+                cell.value = str(t).strip()
+                
+                # Auto-adjust font size to fit cell
+                # Get cell dimensions
+                try:
+                    from openpyxl.styles import Font
+                    
+                    # Get column width (Excel units: 1 unit ≈ 7 pixels for default font)
+                    col_letter = openpyxl.utils.get_column_letter(col)
+                    col_width = self.ws.column_dimensions[col_letter].width
+                    if col_width is None or col_width == 0:
+                        col_width = 8.43  # Default Excel column width
+                    
+                    # Get row height
+                    row_height = self.ws.row_dimensions[row].height
+                    if row_height is None or row_height == 0:
+                        row_height = 15  # Default Excel row height
+                    
+                    # Calculate approximate character capacity
+                    # Excel column width is in "character widths", roughly 7 pixels per unit
+                    # Average character takes about 0.7-1.0 width units at size 11
+                    text_length = len(str(t).strip())
+                    
+                    # Start with default font size (11)
+                    base_font_size = 11
+                    min_font_size = 6  # Don't go below this
+                    
+                    # Rough estimate: 1 width unit fits ~1.2 characters at size 11
+                    chars_per_width = 1.2
+                    available_chars = col_width * chars_per_width
+                    
+                    # If text is too long, shrink font
+                    if text_length > available_chars:
+                        # Calculate required font size
+                        ratio = available_chars / text_length
+                        new_font_size = max(min_font_size, int(base_font_size * ratio))
+                        
+                        # Apply font
+                        if cell.font:
+                            cell.font = Font(
+                                name=cell.font.name,
+                                size=new_font_size,
+                                bold=cell.font.bold,
+                                italic=cell.font.italic,
+                                color=cell.font.color
+                            )
+                        else:
+                            cell.font = Font(size=new_font_size)
+                    else:
+                        # Text fits, use default size
+                        if not cell.font or cell.font.size is None:
+                            cell.font = Font(size=base_font_size)
+                    
+                    # Enable text wrapping for better appearance
+                    if cell.alignment:
+                        from openpyxl.styles import Alignment
+                        cell.alignment = Alignment(
+                            horizontal=cell.alignment.horizontal,
+                            vertical=cell.alignment.vertical,
+                            wrap_text=True
+                        )
+                    else:
+                        from openpyxl.styles import Alignment
+                        cell.alignment = Alignment(wrap_text=True)
+                        
+                except Exception:
+                    # If auto-sizing fails, just write the value
+                    pass
+                
                 row += 1
                 written += 1
         
@@ -507,7 +576,8 @@ class ShipmentCoordinator:
         try:
             from parse_gptfix import process_csv as legacy_tatli
             # legacy returns None or counts; normalize to (matched, unmatched)
-            res = legacy_tatli(csv_path, output_path=output_path)
+            # CRITICAL: Pass sheet_hint to legacy_tatli for multi-day branch support
+            res = legacy_tatli(csv_path, output_path=output_path, sheet_name=sheet_hint)
             if isinstance(res, tuple) and len(res) == 2:
                 return res
             return (0, 0)
@@ -583,6 +653,43 @@ class ShipmentCoordinator:
             s = str(stok)
             # remove {...}
             s = re.sub(r"\{[^}]*\}", "", s)
+            
+            # Clean parentheses content - keep only for specific cases
+            # Keep: T-shirt sizes (S, M, L, XL, XXL), colors, and sauce types
+            def should_keep_parens(content: str) -> bool:
+                content_up = content.upper()
+                # Keep if contains t-shirt sizes
+                if any(size in content_up for size in ['S)', 'M)', 'L)', 'XL)', 'XXL)', 'BEDEN']):
+                    return True
+                # Keep if contains color indicators
+                if any(color in content_up for color in ['BEYAZ', 'SİYAH', 'MAVİ', 'KIRMIZI', 'YEŞİL', 'SARI', 'GRİ', 'KAHVE', 'MOR', 'TURUNCU', 'PEMBE', 'RENK']):
+                    return True
+                # Keep if it's sauce type (contains SOS and a product name)
+                if 'SOS' in content_up and any(prod in content_up for prod in ['CHOCOLATE', 'CIKOLATA', 'KARAMEL', 'FRAMBUAZ', 'CILEKTE', 'ÇİLEK', 'ORMAN', 'MEYVELI', 'FISTIK', 'ANTEP']):
+                    return True
+                return False
+            
+            # Process parentheses: remove unwanted, keep wanted
+            def clean_parens(text: str) -> str:
+                result = text
+                # Find all parentheses content
+                pattern = r'\([^)]*\)'
+                matches = re.finditer(pattern, text)
+                
+                for match in reversed(list(matches)):  # Reverse to maintain positions
+                    content = match.group(0)
+                    inner = content[1:-1]  # Remove outer parens
+                    
+                    if should_keep_parens(inner):
+                        # Keep this parenthesis
+                        continue
+                    else:
+                        # Remove this parenthesis
+                        result = result[:match.start()] + result[match.end():]
+                
+                return result
+            
+            s = clean_parens(s)
             s = re.sub(r"\s+", " ", s).strip()
             return s
 
