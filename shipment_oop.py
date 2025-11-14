@@ -516,13 +516,13 @@ class ImprovedLojistikWriter(LojistikTemplateWriter):
                     chars_per_width = 1.2
                     available_chars = col_width * chars_per_width
                     
-                    # If text is too long, shrink font
+                    # If text is too long, shrink font proportionally
                     if text_length > available_chars:
-                        # Calculate required font size
+                        # Calculate required font size to fit text in current cell width
                         ratio = available_chars / text_length
                         new_font_size = max(min_font_size, int(base_font_size * ratio))
                         
-                        # Apply font
+                        # Apply font - preserve existing font properties
                         if cell.font:
                             cell.font = Font(
                                 name=cell.font.name,
@@ -534,24 +534,15 @@ class ImprovedLojistikWriter(LojistikTemplateWriter):
                         else:
                             cell.font = Font(size=new_font_size)
                     else:
-                        # Text fits, use default size
+                        # Text fits with default size
                         if not cell.font or cell.font.size is None:
                             cell.font = Font(size=base_font_size)
                     
-                    # Enable text wrapping for better appearance
-                    if cell.alignment:
-                        from openpyxl.styles import Alignment
-                        cell.alignment = Alignment(
-                            horizontal=cell.alignment.horizontal,
-                            vertical=cell.alignment.vertical,
-                            wrap_text=True
-                        )
-                    else:
-                        from openpyxl.styles import Alignment
-                        cell.alignment = Alignment(wrap_text=True)
+                    # IMPORTANT: Do NOT enable text wrapping or change cell dimensions
+                    # Keep cell row height and column width unchanged - only adjust font size
                         
                 except Exception:
-                    # If auto-sizing fails, just write the value
+                    # If auto-sizing fails, just write the value without formatting
                     pass
                 
                 row += 1
@@ -721,6 +712,7 @@ class ShipmentCoordinator:
 # ------------------ Utilities for GUI ------------------
 
 def clear_workbook_values(path: str) -> int:
+    """Generic clear - clears all non-formula values. Use specific clear functions instead."""
     if not os.path.exists(path):
         return 0
     wb = openpyxl.load_workbook(path)
@@ -733,6 +725,120 @@ def clear_workbook_values(path: str) -> int:
                 if cell.value not in (None, ""):
                     cell.value = None
                     cleared += 1
+    wb.save(path)
+    return cleared
+
+
+def clear_lojistik_values(path: str) -> int:
+    """Clear only data cells in lojistik file, preserving branch headers and yellow-highlighted cells.
+    
+    Yellow-highlighted cells contain permanent items (demirbaş) that should never be cleared.
+    """
+    if not os.path.exists(path):
+        return 0
+    
+    wb = openpyxl.load_workbook(path)
+    cleared = 0
+    
+    for ws in wb.worksheets:
+        # Find branch columns in first 2 rows
+        branch_cols = set()
+        for r in range(1, 3):  # rows 1-2
+            for c in range(1, ws.max_column + 1):
+                val = ws.cell(row=r, column=c).value
+                if val and str(val).strip():
+                    # This is a branch header column
+                    branch_cols.add(c)
+        
+        # Clear data rows (from row 3 onwards) in branch columns only
+        for c in branch_cols:
+            for r in range(3, ws.max_row + 1):
+                cell = ws.cell(row=r, column=c)
+                
+                # Skip formulas
+                if isinstance(cell.value, str) and cell.value.startswith('='):
+                    continue
+                
+                # CRITICAL: Skip yellow-highlighted cells (demirbaş items)
+                # Check if cell has yellow fill color
+                if cell.fill and cell.fill.start_color:
+                    # Yellow colors: FFFF00 (pure yellow), FFFFFF00 (yellow), etc.
+                    color_rgb = cell.fill.start_color.rgb if hasattr(cell.fill.start_color, 'rgb') else None
+                    if color_rgb:
+                        # Check if it's a yellow color (starts with FFFF or 00FFFF)
+                        color_str = str(color_rgb).upper()
+                        # Yellow variations: FFFFFF00, FFFF00, FFFFE0 (light yellow), etc.
+                        if 'FFFF' in color_str[:6] or color_str.startswith('00FFFF'):
+                            continue  # Skip this cell - it's yellow highlighted
+                
+                # Clear non-empty cells
+                if cell.value not in (None, ""):
+                    cell.value = None
+                    cleared += 1
+    
+    wb.save(path)
+    return cleared
+
+
+def clear_donuk_values(path: str) -> int:
+    """Clear only quantity cells in donuk file, preserving product names and structure.
+    
+    Uses a simple heuristic approach:
+    1. Skip first 2 rows (headers)
+    2. Clear numeric cells (integers, floats)
+    3. For text cells containing products with quantities (e.g., "KÜNEFE = 5"), 
+       extract and keep only the product name
+    """
+    if not os.path.exists(path):
+        return 0
+    
+    import re
+    wb = openpyxl.load_workbook(path)
+    cleared = 0
+    
+    for ws in wb.worksheets:
+        # Process all cells starting from row 3
+        for r in range(3, ws.max_row + 1):
+            for c in range(1, ws.max_column + 1):
+                cell = ws.cell(row=r, column=c)
+                
+                # Skip formulas
+                if isinstance(cell.value, str) and cell.value.startswith('='):
+                    continue
+                
+                # Case 1: Pure numeric value - clear it
+                if isinstance(cell.value, (int, float)):
+                    cell.value = None
+                    cleared += 1
+                    continue
+                
+                # Case 2: String that can be parsed as number - clear it
+                if isinstance(cell.value, str) and cell.value.strip():
+                    try:
+                        float(cell.value.replace(",", "."))
+                        cell.value = None
+                        cleared += 1
+                        continue
+                    except:
+                        pass
+                    
+                    # Case 3: Text containing product name with quantity
+                    # Pattern: "KÜNEFE = 5", "KÜNEFE  5", "ŞERBET = 10"
+                    # We want to keep only the product name part
+                    if "=" in cell.value or re.search(r'\s+\d+', cell.value):
+                        # Check if it contains known product keywords
+                        val_up = TextNormalizer.up(cell.value)
+                        special_products = ["KUNEFE", "SERBET", "TRILECE", "ROKOKO", "EKLER", "MEYVELI"]
+                        
+                        if any(prod in val_up for prod in special_products):
+                            # Extract product name (text before = or trailing numbers)
+                            match = re.match(r'^([^=]+?)(?:\s*=\s*\d+|\s+\d+\s*$)', cell.value)
+                            if match:
+                                product_name = match.group(1).strip()
+                                if product_name and product_name != cell.value:
+                                    cell.value = product_name
+                                    cleared += 1
+    
     wb.save(path)
     return cleared
 

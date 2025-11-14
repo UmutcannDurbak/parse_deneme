@@ -867,10 +867,45 @@ def main():
             return
         try:
             cleared_total = 0
-            for file_path in ["sevkiyat_tatlı.xlsx", "sevkiyat_donuk.xlsx", "sevkiyat_lojistik.xlsx"]:
-                if os.path.exists(file_path):
-                    cleared = clear_workbook_values(file_path)
-                    cleared_total += cleared
+            # Import specific clear functions
+            from shipment_oop import clear_donuk_values, clear_lojistik_values
+            
+            # Clear tatlı file (uses specific clear_all_records logic)
+            if os.path.exists("sevkiyat_tatlı.xlsx"):
+                wb_tatli = load_workbook("sevkiyat_tatlı.xlsx")
+                cleared_tatli = 0
+                for ws in wb_tatli.worksheets:
+                    subeler = {}
+                    for cell in ws[2][1:]:
+                        if cell.value:
+                            sube_ad = str(cell.value).strip()
+                            subeler[sube_ad] = {"tepsi": cell.column, "tepsi_2": cell.column+1, "adet": cell.column+2, "adet_2": cell.column+3}
+                    for row in ws.iter_rows(min_row=3, max_row=ws.max_row, max_col=1):
+                        ana_cell = row[0]
+                        if not ana_cell.value:
+                            continue
+                        ana_ad = str(ana_cell.value).upper()
+                        skip_keywords = ["SIPARIS TARIHI", "SIPARIS ALAN", "TESLIM TARIHI", "TEYID EDEN"]
+                        if any(ana_ad.startswith(k) or ana_ad == k for k in skip_keywords):
+                            continue
+                        for sube in subeler.values():
+                            for col in [sube["tepsi"], sube["tepsi_2"], sube["adet"], sube["adet_2"]]:
+                                was_cleared = _clear_cell_preserve_merge(ws, ana_cell.row, col)
+                                if was_cleared:
+                                    cleared_tatli += 1
+                wb_tatli.save("sevkiyat_tatlı.xlsx")
+                cleared_total += cleared_tatli
+            
+            # Clear donuk file
+            if os.path.exists("sevkiyat_donuk.xlsx"):
+                cleared = clear_donuk_values("sevkiyat_donuk.xlsx")
+                cleared_total += cleared
+            
+            # Clear lojistik file
+            if os.path.exists("sevkiyat_lojistik.xlsx"):
+                cleared = clear_lojistik_values("sevkiyat_lojistik.xlsx")
+                cleared_total += cleared
+            
             status_label.config(text=f"✅ Tüm dosyalar temizlendi! ({cleared_total} hücre)")
             log_widget.insert(tk.END, f"Tüm dosyalar temizlendi! ({cleared_total} hücre)\n")
             log_widget.see(tk.END)
@@ -896,14 +931,51 @@ def main():
     # Güncelleme butonu ekle
     update_btn = tk.Button(btn_frame, text="🔄 Güncelleme", width=18, command=show_update_window)
     update_btn.grid(row=1, column=0, padx=4, pady=(5, 0))
-    # Open buttons
-    open_frame = tk.Frame(root)
-    open_frame.grid(row=4, column=0, pady=(4, 8))
-    def mk(btn_text, path):
-        return tk.Button(open_frame, text=btn_text, width=22, command=lambda p=path: open_file(p))
-    mk("Tatlı Dosyasını Aç", "sevkiyat_tatlı.xlsx").grid(row=0, column=0, padx=5)
-    mk("Donuk Dosyasını Aç", "sevkiyat_donuk.xlsx").grid(row=0, column=1, padx=5)
-    mk("Lojistik Dosyasını Aç", "sevkiyat_lojistik.xlsx").grid(row=0, column=2, padx=5)
+    
+    # Open and Clear buttons frame - organized vertically for better UI consistency
+    files_frame = tk.Frame(root)
+    files_frame.grid(row=4, column=0, pady=(4, 8))
+    
+    # Helper function to create clear button for specific file
+    def clear_donuk_file():
+        confirm = messagebox.askyesno("Onay", "Donuk sevkiyat dosyasını temizlemek istediğinize emin misiniz?")
+        if not confirm:
+            return
+        try:
+            from shipment_oop import clear_donuk_values
+            cleared = clear_donuk_values("sevkiyat_donuk.xlsx")
+            status_label.config(text=f"✅ Donuk dosyası temizlendi! ({cleared} hücre)")
+            log_widget.insert(tk.END, f"Donuk dosyası temizlendi! ({cleared} hücre)\n")
+            log_widget.see(tk.END)
+        except Exception as e:
+            status_label.config(text=f"❌ Hata: {e}")
+            messagebox.showerror("Hata", f"Bir hata oluştu:\n{e}")
+    
+    def clear_lojistik_file():
+        confirm = messagebox.askyesno("Onay", "Lojistik sevkiyat dosyasını temizlemek istediğinize emin misiniz?")
+        if not confirm:
+            return
+        try:
+            from shipment_oop import clear_lojistik_values
+            cleared = clear_lojistik_values("sevkiyat_lojistik.xlsx")
+            status_label.config(text=f"✅ Lojistik dosyası temizlendi! ({cleared} hücre)")
+            log_widget.insert(tk.END, f"Lojistik dosyası temizlendi! ({cleared} hücre)\n")
+            log_widget.see(tk.END)
+        except Exception as e:
+            status_label.config(text=f"❌ Hata: {e}")
+            messagebox.showerror("Hata", f"Bir hata oluştu:\n{e}")
+    
+    # Tatlı column
+    tk.Button(files_frame, text="Tatlı Dosyasını Aç", width=22, command=lambda: open_file("sevkiyat_tatlı.xlsx")).grid(row=0, column=0, padx=5, pady=2)
+    tk.Button(files_frame, text="Tatlı Dosyasını Temizle", width=22, command=lambda: clear_all_records(status_label, log_widget)).grid(row=1, column=0, padx=5, pady=2)
+    
+    # Donuk column
+    tk.Button(files_frame, text="Donuk Dosyasını Aç", width=22, command=lambda: open_file("sevkiyat_donuk.xlsx")).grid(row=0, column=1, padx=5, pady=2)
+    tk.Button(files_frame, text="Donuk Dosyasını Temizle", width=22, command=clear_donuk_file).grid(row=1, column=1, padx=5, pady=2)
+    
+    # Lojistik column
+    tk.Button(files_frame, text="Lojistik Dosyasını Aç", width=22, command=lambda: open_file("sevkiyat_lojistik.xlsx")).grid(row=0, column=2, padx=5, pady=2)
+    tk.Button(files_frame, text="Lojistik Dosyasını Temizle", width=22, command=clear_lojistik_file).grid(row=1, column=2, padx=5, pady=2)
 
     status_label = tk.Label(root, text="", fg="blue", anchor="w")
     status_label.grid(row=2, column=0, sticky="ew", padx=10, pady=5)

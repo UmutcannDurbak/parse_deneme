@@ -125,10 +125,17 @@ def read_branch_from_file(csv_path: str) -> Optional[str]:
                     if "-" in part:
                         part = part.split("-", 1)[-1]
                     part = part.strip()
-                    # If parens exist, prefer the inner content (e.g., ANKARA(KIZILAY) -> KIZILAY)
-                    m = re.search(r"\(([^)]+)\)", part)
+                    # If parens exist, try both the inner content and the full part
+                    # e.g., "ELAZIG(ELYSIUM)" -> try "ELYSIUM" first, then "ELAZIG"
+                    # This allows matching with both Excel variations
+                    m = re.search(r"^([^(]+)\(([^)]+)\)$", part)
                     if m:
-                        return m.group(1).strip()
+                        # Return both parts separated by | for fuzzy matching
+                        # The matching code will try both
+                        outer = m.group(1).strip()
+                        inner = m.group(2).strip()
+                        # Return the part before parens as primary (e.g., "ELAZIG" not "ELYSIUM")
+                        return outer
                     # Remove trailing DEPO if present
                     if part.upper().endswith(" DEPO"):
                         part = part[:-5].strip()
@@ -408,7 +415,8 @@ def find_branch_span(ws: openpyxl.worksheet.worksheet.Worksheet, branch_name: st
 
 def is_merged_at(ws: openpyxl.worksheet.worksheet.Worksheet, r: int, c: int) -> Optional[Tuple[int, int, int, int]]:
     for mr in ws.merged_cells.ranges:
-        min_row, min_col, max_row, max_col = mr.bounds
+        # bounds returns (min_col, min_row, max_col, max_row)
+        min_col, min_row, max_col, max_row = mr.bounds
         if min_row <= r <= max_row and min_col <= c <= max_col:
             return (min_row, min_col, max_row, max_col)
     return None
@@ -2643,6 +2651,193 @@ def process_csv(csv_path: str, output_path: str = "sevkiyat_tatlı.xlsx", sheet_
             ws.merge_cells(r)
         except Exception:
             pass
+
+    # ==================== SEPET HESAPLAMA ====================
+    # Calculate basket (sepet) count for each branch based on product quantities
+    # Handle basket calculation for all sheets
+    
+    import math
+    
+    sheet_name_up = normalize_text(ws.title) if ws.title else ""
+    
+    # Check if this is a KAYSERİ-SİVAS or ADANA sheet (different division values)
+    is_special_sheet = any(keyword in sheet_name_up for keyword in ["KAYSERISIVAS", "ADANA", "KAYSERI", "SIVAS"])
+    
+    # Select appropriate division values based on sheet type
+    if is_special_sheet:
+        # KAYSERİ-SİVAS and ADANA sheets use different division values
+        product_divisions = {
+            "KAZANDIBI": 60,
+            "ANTEPFISTIKLIKAZANDIBI": 60,
+            "TAVUKGOGSU": 60,
+            "TAVUKGOGSUKAZANDIBI": 60,
+            "TAVUKGOGSUKAZ": 60,
+            "SAKIZLIMUHALLEBI": 60,
+            "LIGHTKAZANDIBI": 60,
+            "KESKULKASE": 32,
+            "KESKULTEKLI": 60,
+            "KESKULPAKET": 60,
+            "KREMSOKOLAKASE": 32,
+            "KREMSOKOLATEKLI": 60,
+            "KREMCOKOLATEKLI": 60,
+            "KREMCOKOLATAKASE": 32,
+            "FIRINSUTLACKASE": 32,
+            "FIRINSUTLACTEKLI": 48,
+            "FIRINSUTLACBUYUK": 24,
+            "ASUREKASE": 32,
+            "ASURETEKLI": 60,
+            "ASUREPAKET": 60,
+            "ASUREBUYUK": 24,
+            "PROFITEROLKASE": 40,
+            "PROFITEROLTEKLI": 60,
+            "PROFITEROLBUYUK": 24,
+            "KREMKARAMEL": 60,
+            "EKMEKKADAYIFI": 8,
+            "SEKERPARE": 8,
+            "KAYMAK": 18,
+            "KAYMAKTAVA": 18,
+        }
+    else:
+        # Standard sheets (all other locations)
+        product_divisions = {
+            "KAZANDIBI": 45,
+            "ANTEPFISTIKLIKAZANDIBI": 45,
+            "TAVUKGOGSU": 45,
+            "TAVUKGOGSUKAZANDIBI": 45,
+            "TAVUKGOGSUKAZ": 45,  # Short variant
+            "SAKIZLIMUHALLEBI": 45,
+            "LIGHTKAZANDIBI": 45,
+            "KESKULKASE": 24,
+            "KESKULTEKLI": 45,
+            "KESKULPAKET": 45,  # Paket variant (TEKLİ PAKET)
+            "KREMSOKOLAKASE": 24,
+            "KREMSOKOLATEKLI": 45,
+            "KREMCOKOLATEKLI": 45,
+            "KREMCOKOLATAKASE": 24,
+            "FIRINSUTLACKASE": 24,
+            "FIRINSUTLACTEKLI": 36,
+            "FIRINSUTLACBUYUK": 18,
+            "ASUREKASE": 24,
+            "ASURETEKLI": 45,
+            "ASUREPAKET": 45,  # Paket variant (TEKLİ PAKET)
+            "ASUREBUYUK": 18,
+            "PROFITEROLKASE": 30,
+            "PROFITEROLTEKLI": 45,
+            "PROFITEROLBUYUK": 18,
+            "KREMKARAMEL": 30,
+            "EKMEKKADAYIFI": 6,
+            "SEKERPARE": 6,
+            "KAYMAK": 18,
+            "KAYMAKTAVA": 18,  # Tava variant
+        }
+    
+    # First 5 products have both TEPSI (basket) and ADET (piece) columns
+    # TEPSI is already a basket count (integer), ADET needs to be divided
+    # This applies to all sheets (both standard and special)
+    first_five_products = [
+        "KAZANDIBI",
+        "ANTEPFISTIKLIKAZANDIBI", 
+        "TAVUKGOGSU",
+        "TAVUKGOGSUKAZANDIBI",
+        "TAVUKGOGSUKAZ",  # Short variant of TAVUKGOGSUKAZANDIBI
+        "SAKIZLIMUHALLEBI"
+    ]
+    
+    # Get all branch columns from row 2
+    # Row 2 format: [Date, Branch1, ..., BranchN]
+    # Each branch has 4 columns: TEPSI, TEPSI_2, ADET, ADET_2
+    subeler = {}
+    for cell in ws[2][1:]:  # Skip first column (date)
+        if cell.value and str(cell.value).strip():
+            sname = normalize_text(cell.value)
+            has_digit = any(char.isdigit() for char in str(cell.value)[:8])
+            # Only process if it looks like a branch name (not a date)
+            if sname and not has_digit:
+                subeler[sname] = {
+                    "tepsi_col": cell.column,
+                    "adet_col": cell.column + 2,  # ADET is 2 columns after TEPSI
+                    "sepet_row": 1,  # Write basket count to row 1 (header row)
+                    "sepet_col": cell.column  # Write to branch column (merged cell master)
+                }
+    
+    # Calculate basket count for each branch
+    for sube_name, cols in subeler.items():
+        total_baskets = 0.0  # Use float for decimal calculations
+        
+        # Iterate through all product rows
+        for row_idx in range(3, ws.max_row + 1):
+            ana_cell = ws.cell(row_idx, 1)
+            if not ana_cell.value:
+                continue
+            
+            # Get product name and variant
+            ana_ad, varyant = split_tatli_and_variant(ana_cell.value)
+            ana_ad_norm = normalize_text(ana_ad)
+            varyant_norm = normalize_variant(varyant)
+            
+            # Skip non-product rows
+            if not ana_ad_norm:
+                continue
+            skip_keywords = ["SIPARIS TARIHI", "SIPARIS ALAN", "TESLIM TARIHI", "TEYID EDEN", "MIKTAR", "ADET", "TEPSI"]
+            if any(k in ana_ad_norm for k in skip_keywords):
+                continue
+            
+            # Build full product key (product + variant)
+            # Remove all spaces from product key to match dictionary keys
+            if varyant_norm and varyant_norm not in ["ADET", "TEPSI"]:
+                product_key = (ana_ad_norm + varyant_norm).replace(" ", "")
+            else:
+                product_key = ana_ad_norm.replace(" ", "")
+            
+            # Get division value for this product
+            division_value = product_divisions.get(product_key)
+            if not division_value:
+                continue  # Skip products without division value
+            
+            # Check if this is one of the first 5 products (has TEPSI column)
+            # Use the normalized product key (no spaces) for comparison
+            is_first_five = product_key in first_five_products
+            
+            if is_first_five:
+                # Get TEPSI value (already a basket count)
+                tepsi_cell = ws.cell(row=row_idx, column=cols["tepsi_col"])
+                tepsi_val = tepsi_cell.value
+                if tepsi_val not in (None, "", "-"):
+                    try:
+                        tepsi_count = float(str(tepsi_val).replace(",", "."))
+                        total_baskets += tepsi_count
+                    except:
+                        pass
+                
+                # Get ADET value and divide
+                adet_cell = ws.cell(row=row_idx, column=cols["adet_col"])
+                adet_val = adet_cell.value
+                if adet_val not in (None, "", "-"):
+                    try:
+                        adet_count = float(str(adet_val).replace(",", "."))
+                        basket_from_adet = adet_count / division_value
+                        total_baskets += basket_from_adet
+                    except:
+                        pass
+            else:
+                # Other products: only ADET column (at TEPSI position)
+                adet_cell = ws.cell(row=row_idx, column=cols["tepsi_col"])
+                adet_val = adet_cell.value
+                if adet_val not in (None, "", "-"):
+                    try:
+                        adet_count = float(str(adet_val).replace(",", "."))
+                        basket_from_adet = adet_count / division_value
+                        total_baskets += basket_from_adet
+                    except:
+                        pass
+        
+        # Round up to nearest integer (ceiling)
+        final_basket_count = math.ceil(total_baskets)
+        
+        # Write basket count using safe_write (handles merged cells)
+        # Only write if there's a positive basket count
+        if final_basket_count > 0:
+            safe_write(ws, cols["sepet_row"], cols["sepet_col"], final_basket_count)
 
     wb.save(output_path)
     return matched, 0
