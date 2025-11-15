@@ -30,7 +30,7 @@ except ImportError:
 
 # PyInstaller ile build ederken .ico dosyasını eklemeyi unutmayın!
 ICON_PATH = "appicon.ico"
-VERSION = "v1.3.3"
+VERSION = "v1.3.5"
 DEVELOPER = "Developer U.D"
 
 # Güncelleme ayarları
@@ -225,7 +225,10 @@ from shipment_oop import (
     IZMIR_BRANCHES,
     BranchDecisionEngine,
     MULTI_DAY_BRANCHES,
-    SHEET_NAME_MAPPING
+    SHEET_NAME_MAPPING,
+    clear_tatli_values,
+    clear_donuk_values,
+    clear_lojistik_values
 )
 '''
 # Hücre formatını bozmadan sadece ana/master hücreye değer silen fonksiyon
@@ -262,7 +265,8 @@ from openpyxl import load_workbook  # pyright: ignore[reportMissingModuleSource]
 import datetime
 
 def clear_all_records(status_label, log_widget):
-    confirm = messagebox.askyesno("Onay", "Tüm kayıtları silmek/temizlemek istediğinize emin misiniz?")
+    """Clear tatlı file using the new clear_tatli_values function"""
+    confirm = messagebox.askyesno("Onay", "Tatlı dosyasındaki tüm kayıtları (sepet değerleri dahil) temizlemek istediğinize emin misiniz?")
     if not confirm:
         status_label.config(text="İşlem iptal edildi.")
         return
@@ -272,37 +276,11 @@ def clear_all_records(status_label, log_widget):
             status_label.config(text="❌ Önce bir sevkiyat dosyası oluşturulmalı!")
             messagebox.showerror("Hata", "Önce bir sevkiyat dosyası oluşturulmalı!")
             return
-        wb = load_workbook(output_path)
-        cleared = 0
-        for ws in wb.worksheets:
-            # 2. satırdan şube başlıklarını oku
-            subeler = {}
-            for cell in ws[2][1:]:
-                if cell.value:
-                    sube_ad = str(cell.value).strip()
-                    subeler[sube_ad] = {"tepsi": cell.column, "tepsi_2": cell.column+1, "adet": cell.column+2, "adet_2": cell.column+3}
-
-            # Önemli: sadece gerektiğinde merged-range'i unmerge edeceğiz (tek tek)
-            # İterasyona gir
-            for row in ws.iter_rows(min_row=3, max_row=ws.max_row, max_col=1):
-                ana_cell = row[0]
-                if not ana_cell.value:
-                    continue
-                ana_ad = str(ana_cell.value).upper()
-                skip_keywords = ["SIPARIS TARIHI", "SIPARIS ALAN", "TESLIM TARIHI", "TEYID EDEN"]
-                if any(ana_ad.startswith(k) or ana_ad == k for k in skip_keywords):
-                    continue
-                for sube in subeler.values():
-                    for col in [sube["tepsi"], sube["tepsi_2"], sube["adet"], sube["adet_2"]]:
-                        # Eğer hedef cell merged bir range'in içinde ise ve master header ise skip clearing
-                        was_cleared = _clear_cell_preserve_merge(ws, ana_cell.row, col)
-                        if was_cleared:
-                            cleared += 1
-
-        wb.save(output_path)
-        status_label.config(text=f"✅ Tüm kayıtlar temizlendi! ({cleared} hücre)")
-        log_widget.insert(tk.END, f"Tüm kayıtlar temizlendi! ({cleared} hücre)\n")
-        log_widget.see(tk.END)
+        
+        cleared = clear_tatli_values(output_path)
+        
+        status_label.config(text=f"✅ Tatlı dosyası temizlendi! ({cleared} hücre)")
+        safe_log_insert(log_widget, f"✅ Tatlı dosyası temizlendi! ({cleared} hücre - sepet değerleri dahil)\n")
     except Exception as e:
         status_label.config(text=f"❌ Hata: {e}")
         messagebox.showerror("Hata", f"Bir hata oluştu:\n{e}")
@@ -416,6 +394,7 @@ def run_process(csv_path, status_label, log_widget, izmir_day_var=None):
                 log_widget.config(state='normal')
                 log_widget.insert(tk.END, msg + '\n')
                 log_widget.see(tk.END)
+                log_widget.config(state='disabled')
                 log_widget.update_idletasks()
             log_widget.after(0, append_log)
         
@@ -455,41 +434,36 @@ def run_process(csv_path, status_label, log_widget, izmir_day_var=None):
                 engine = BranchDecisionEngine(branch_name)
                 if engine.requires_day_selection() and not sheet_hint:
                     possible_sheets = engine.get_possible_sheets()
-                    log_widget.insert(tk.END, f"[INFO] '{branch_name}' şubesi için gün seçimi gerekli.\n")
-                    log_widget.see(tk.END)
+                    safe_log_insert(log_widget, f"[INFO] '{branch_name}' şubesi için gün seçimi gerekli.\n")
                     
                     # Show modal dialog for day selection
                     selected_day = show_day_selection_dialog(branch_name, possible_sheets)
                     
                     if not selected_day:
                         status_label.config(text="❌ İşlem iptal edildi (gün seçilmedi)")
-                        log_widget.insert(tk.END, "[INFO] Kullanıcı gün seçimini iptal etti.\n")
+                        safe_log_insert(log_widget, "[INFO] Kullanıcı gün seçimini iptal etti.\n")
                         return
                     
                     sheet_hint = selected_day
-                    log_widget.insert(tk.END, f"[INFO] Seçilen gün: {selected_day}\n")
+                    safe_log_insert(log_widget, f"[INFO] Seçilen gün: {selected_day}\n")
                     
                 if sheet_hint:
                     # Map user-friendly name to actual sheet name
                     sheet_hint = SHEET_NAME_MAPPING.get(sheet_hint, sheet_hint)
         except Exception as e:
-            log_widget.insert(tk.END, f"[WARN] Branch kontrolü başarısız: {e}\n")
+            safe_log_insert(log_widget, f"[WARN] Branch kontrolü başarısız: {e}\n")
         
         status_label.config(text="⏳ Başladı: CSV okunuyor...")
-        log_widget.insert(tk.END, "[INFO] İşlem başladı: CSV okunuyor ve eşleştirilecek.\n")
-        log_widget.see(tk.END)
+        safe_log_insert(log_widget, "[INFO] İşlem başladı: CSV okunuyor ve eşleştirilecek.\n")
         # Aşama: Çalıştır
         try:
-            log_widget.insert(tk.END, "[STEP] Tatlı eşleştirme başlıyor...\n")
-            log_widget.see(tk.END)
+            safe_log_insert(log_widget, "[STEP] Tatlı eşleştirme başlıyor...\n")
             t_match, t_unmatch = coord.process_tatli(csv_path, output_path="sevkiyat_tatlı.xlsx", sheet_hint=sheet_hint)
             status_label.config(text=f"⏳ Tatlı tamamlandı: {t_match} yazıldı. Donuk hazırlanıyor...")
-            log_widget.insert(tk.END, "[STEP] Donuk eşleştirme başlıyor...\n")
-            log_widget.see(tk.END)
+            safe_log_insert(log_widget, "[STEP] Donuk eşleştirme başlıyor...\n")
             d_match, d_unmatch = coord.process_donuk(csv_path, output_path="sevkiyat_donuk.xlsx", sheet_hint=sheet_hint)
             status_label.config(text=f"⏳ Donuk tamamlandı: {d_match} yazıldı. Lojistik hazırlanıyor...")
-            log_widget.insert(tk.END, "[STEP] Lojistik eşleştirme başlıyor...\n")
-            log_widget.see(tk.END)
+            safe_log_insert(log_widget, "[STEP] Lojistik eşleştirme başlıyor...\n")
             l_match, l_unmatch = coord.process_lojistik(csv_path, output_path="sevkiyat_lojistik.xlsx", sheet_hint=sheet_hint)
             summary = {
                 "tatli": {"matched": t_match, "unmatched": t_unmatch, "file": "sevkiyat_tatlı.xlsx"},
@@ -497,35 +471,41 @@ def run_process(csv_path, status_label, log_widget, izmir_day_var=None):
                 "lojistik": {"matched": l_match, "unmatched": l_unmatch, "file": "sevkiyat_lojistik.xlsx"},
             }
         except Exception as e:
-            log_widget.insert(tk.END, f"[ERR-E1] run_all aşamasında hata: {e}\n")
+            safe_log_insert(log_widget, f"[ERR-E1] run_all aşamasında hata: {e}\n")
             status_label.config(text="❌ Hata: [E1] Koordinatör çalıştırma başarısız")
             raise
         # Tarih hücresini sadece Tatlı dosyasında güncelle
         try:
             format_today_in_workbook(summary["tatli"]["file"])
         except Exception as e:
-            log_widget.insert(tk.END, f"[WARN-W1] Tarih yazılamadı ({summary['tatli']['file']}): {e}\n")
-            log_widget.see(tk.END)
+            safe_log_insert(log_widget, f"[WARN-W1] Tarih yazılamadı ({summary['tatli']['file']}): {e}\n")
         status_label.config(text=(
             "✅ İşlem tamamlandı!\n"
             f"Tatlı: {summary['tatli']['matched']}/{summary['tatli']['file']}  "
             f"Donuk: {summary['donuk']['matched']}/{summary['donuk']['file']}  "
             f"Lojistik: {summary['lojistik']['matched']}/{summary['lojistik']['file']}"
         ))
-        log_widget.insert(tk.END, "[DONE] Tüm eşleştirmeler tamamlandı ve dosyalar kaydedildi.\n")
-        log_widget.see(tk.END)
+        safe_log_insert(log_widget, "[DONE] Tüm eşleştirmeler tamamlandı ve dosyalar kaydedildi.\n")
         messagebox.showinfo("Başarılı", "Tüm sevkiyat dosyaları oluşturuldu.")
     except Exception as e:
         status_label.config(text=f"❌ Hata: {e}")
-        log_widget.insert(tk.END, f"[ERR-E0] Genel hata: {e}\n")
-        log_widget.see(tk.END)
+        safe_log_insert(log_widget, f"[ERR-E0] Genel hata: {e}\n")
         messagebox.showerror("Hata", f"Bir hata oluştu:\n{e}")
+
+def safe_log_insert(log_widget, message):
+    """Safely insert message into log widget (handles disabled state)"""
+    log_widget.config(state='normal')
+    log_widget.insert(tk.END, message)
+    log_widget.see(tk.END)
+    log_widget.config(state='disabled')
 
 def select_file(status_label, log_widget, izmir_day_var=None):
     file_path = filedialog.askopenfilename(filetypes=[("CSV Dosyası", "*.csv")])
     if file_path:
         status_label.config(text="İşleniyor...")
+        log_widget.config(state='normal')
         log_widget.delete(1.0, tk.END)
+        log_widget.config(state='disabled')
         threading.Thread(target=run_process, args=(file_path, status_label, log_widget, izmir_day_var)).start()
 
 def on_drop(event, status_label, log_widget):
@@ -845,92 +825,83 @@ def main():
     # Gün seçimi artık otomatik modal dialog ile yapılıyor - eski dropdown kaldırıldı
     izmir_day_var = None  # Compatibility için None olarak bırak
 
-    # Butonlar için yeni bir frame, ortalanmış ve infonun hemen altında
-    btn_frame = tk.Frame(root)
-    btn_frame.grid(row=1, column=0, pady=(10, 5))
-    btn_frame.grid_columnconfigure(0, weight=1)
-    btn_frame.grid_columnconfigure(1, weight=1)
-    btn_frame.grid_columnconfigure(2, weight=1)
-    btn_frame.grid_columnconfigure(3, weight=1)
+    # Ana üst butonlar için frame - sadece 3 buton
+    top_btn_frame = tk.Frame(root, pady=15)
+    top_btn_frame.grid(row=1, column=0)
     
-    select_btn = tk.Button(btn_frame, text="CSV Seç veya Bırak", width=18, command=lambda: select_file(status_label, log_widget, izmir_day_var))
-    select_btn.grid(row=0, column=0, padx=4)
+    # CSV Seç butonu
+    select_btn = tk.Button(
+        top_btn_frame, 
+        text="📄 CSV Seç", 
+        width=20, 
+        height=2,
+        font=("Arial", 11, "bold"),
+        bg="#007BFF",
+        fg="white",
+        command=lambda: select_file(status_label, log_widget, izmir_day_var)
+    )
+    select_btn.grid(row=0, column=0, padx=10)
     
-    clear_btn = tk.Button(btn_frame, text="Tatlı Dosyasını Temizle", width=18, command=lambda: clear_all_records(status_label, log_widget))
-    clear_btn.grid(row=0, column=1, padx=4)
-    
-    # Yeni butonlar ekle
+    # Tüm Dosyaları Temizle butonu
     def clear_all_files():
-        confirm = messagebox.askyesno("Onay", "Tüm sevkiyat dosyalarını temizlemek istediğinize emin misiniz?")
+        confirm = messagebox.askyesno("Onay", "Tüm sevkiyat dosyalarını (Tatlı, Donuk, Lojistik) temizlemek istediğinize emin misiniz?")
         if not confirm:
             status_label.config(text="İşlem iptal edildi.")
             return
         try:
             cleared_total = 0
-            # Import specific clear functions
-            from shipment_oop import clear_donuk_values, clear_lojistik_values
+            results = []
             
-            # Clear tatlı file (uses specific clear_all_records logic)
+            # Clear tatlı file
             if os.path.exists("sevkiyat_tatlı.xlsx"):
-                wb_tatli = load_workbook("sevkiyat_tatlı.xlsx")
-                cleared_tatli = 0
-                for ws in wb_tatli.worksheets:
-                    subeler = {}
-                    for cell in ws[2][1:]:
-                        if cell.value:
-                            sube_ad = str(cell.value).strip()
-                            subeler[sube_ad] = {"tepsi": cell.column, "tepsi_2": cell.column+1, "adet": cell.column+2, "adet_2": cell.column+3}
-                    for row in ws.iter_rows(min_row=3, max_row=ws.max_row, max_col=1):
-                        ana_cell = row[0]
-                        if not ana_cell.value:
-                            continue
-                        ana_ad = str(ana_cell.value).upper()
-                        skip_keywords = ["SIPARIS TARIHI", "SIPARIS ALAN", "TESLIM TARIHI", "TEYID EDEN"]
-                        if any(ana_ad.startswith(k) or ana_ad == k for k in skip_keywords):
-                            continue
-                        for sube in subeler.values():
-                            for col in [sube["tepsi"], sube["tepsi_2"], sube["adet"], sube["adet_2"]]:
-                                was_cleared = _clear_cell_preserve_merge(ws, ana_cell.row, col)
-                                if was_cleared:
-                                    cleared_tatli += 1
-                wb_tatli.save("sevkiyat_tatlı.xlsx")
-                cleared_total += cleared_tatli
+                cleared = clear_tatli_values("sevkiyat_tatlı.xlsx")
+                cleared_total += cleared
+                results.append(f"Tatlı: {cleared} hücre")
             
             # Clear donuk file
             if os.path.exists("sevkiyat_donuk.xlsx"):
                 cleared = clear_donuk_values("sevkiyat_donuk.xlsx")
                 cleared_total += cleared
+                results.append(f"Donuk: {cleared} hücre")
             
             # Clear lojistik file
             if os.path.exists("sevkiyat_lojistik.xlsx"):
                 cleared = clear_lojistik_values("sevkiyat_lojistik.xlsx")
                 cleared_total += cleared
+                results.append(f"Lojistik: {cleared} hücre")
             
             status_label.config(text=f"✅ Tüm dosyalar temizlendi! ({cleared_total} hücre)")
-            log_widget.insert(tk.END, f"Tüm dosyalar temizlendi! ({cleared_total} hücre)\n")
-            log_widget.see(tk.END)
+            safe_log_insert(log_widget, f"✅ Tüm dosyalar temizlendi!\n")
+            for result in results:
+                safe_log_insert(log_widget, f"   - {result}\n")
         except Exception as e:
             status_label.config(text=f"❌ Hata: {e}")
             messagebox.showerror("Hata", f"Bir hata oluştu:\n{e}")
     
-    clear_all_btn = tk.Button(btn_frame, text="Tüm Dosyaları Temizle", width=18, command=clear_all_files)
-    clear_all_btn.grid(row=0, column=2, padx=4)
+    clear_all_btn = tk.Button(
+        top_btn_frame, 
+        text="🧹 Tümünü Temizle", 
+        width=20, 
+        height=2,
+        font=("Arial", 11, "bold"),
+        bg="#FFC107",
+        fg="black",
+        command=clear_all_files
+    )
+    clear_all_btn.grid(row=0, column=1, padx=10)
     
-    def refresh_status():
-        files_status = []
-        for file_path in ["sevkiyat_tatlı.xlsx", "sevkiyat_donuk.xlsx", "sevkiyat_lojistik.xlsx"]:
-            if os.path.exists(file_path):
-                files_status.append(f"✅ {file_path}")
-            else:
-                files_status.append(f"❌ {file_path}")
-        status_label.config(text="\n".join(files_status))
-    
-    refresh_btn = tk.Button(btn_frame, text="Durumu Yenile", width=18, command=refresh_status)
-    refresh_btn.grid(row=0, column=3, padx=4)
-    
-    # Güncelleme butonu ekle
-    update_btn = tk.Button(btn_frame, text="🔄 Güncelleme", width=18, command=show_update_window)
-    update_btn.grid(row=1, column=0, padx=4, pady=(5, 0))
+    # Güncelleme butonu
+    update_btn = tk.Button(
+        top_btn_frame, 
+        text="🔄 Güncelleme Kontrol", 
+        width=20, 
+        height=2,
+        font=("Arial", 11, "bold"),
+        bg="#28A745",
+        fg="white",
+        command=show_update_window
+    )
+    update_btn.grid(row=0, column=2, padx=10)
     
     # Open and Clear buttons frame - organized vertically for better UI consistency
     files_frame = tk.Frame(root)
@@ -942,11 +913,9 @@ def main():
         if not confirm:
             return
         try:
-            from shipment_oop import clear_donuk_values
             cleared = clear_donuk_values("sevkiyat_donuk.xlsx")
             status_label.config(text=f"✅ Donuk dosyası temizlendi! ({cleared} hücre)")
-            log_widget.insert(tk.END, f"Donuk dosyası temizlendi! ({cleared} hücre)\n")
-            log_widget.see(tk.END)
+            safe_log_insert(log_widget, f"✅ Donuk dosyası temizlendi! ({cleared} hücre)\n")
         except Exception as e:
             status_label.config(text=f"❌ Hata: {e}")
             messagebox.showerror("Hata", f"Bir hata oluştu:\n{e}")
@@ -956,11 +925,9 @@ def main():
         if not confirm:
             return
         try:
-            from shipment_oop import clear_lojistik_values
             cleared = clear_lojistik_values("sevkiyat_lojistik.xlsx")
             status_label.config(text=f"✅ Lojistik dosyası temizlendi! ({cleared} hücre)")
-            log_widget.insert(tk.END, f"Lojistik dosyası temizlendi! ({cleared} hücre)\n")
-            log_widget.see(tk.END)
+            safe_log_insert(log_widget, f"✅ Lojistik dosyası temizlendi! ({cleared} hücre)\n")
         except Exception as e:
             status_label.config(text=f"❌ Hata: {e}")
             messagebox.showerror("Hata", f"Bir hata oluştu:\n{e}")
@@ -980,7 +947,17 @@ def main():
     status_label = tk.Label(root, text="", fg="blue", anchor="w")
     status_label.grid(row=2, column=0, sticky="ew", padx=10, pady=5)
 
-    log_widget = scrolledtext.ScrolledText(root, state='normal')
+    # Log widget - disabled state to prevent user editing
+    log_widget = scrolledtext.ScrolledText(
+        root, 
+        state='disabled',
+        wrap=tk.WORD,
+        bg="#F8F9FA",
+        fg="#212529",
+        font=("Consolas", 9),
+        relief=tk.FLAT,
+        borderwidth=2
+    )
     log_widget.grid(row=3, column=0, sticky="nsew", padx=10, pady=10)
     log_widget.update_idletasks()
 
@@ -1001,9 +978,6 @@ def main():
 
     footer = tk.Label(root, text=f"{DEVELOPER} | {VERSION}", fg="gray")
     footer.grid(row=6, column=0, columnspan=2, sticky="ew", pady=5)
-
-    # Başlangıçta durumu yenile
-    refresh_status()
     
     # Otomatik güncelleme kontrolü (arka planda)
     def auto_check_updates():

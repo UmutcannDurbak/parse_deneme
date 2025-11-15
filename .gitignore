@@ -77,5 +77,6 @@ simple_*.py
 appicon.ico
 build.bat
 Thumbs.db*.pyc
+last_*.txt
 
 Desktop.ini

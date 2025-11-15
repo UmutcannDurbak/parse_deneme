@@ -214,9 +214,22 @@ class SimpleListWriter(BaseExcelWriter):
         row = start_row
         written = 0
         for it in items:
-            self.ws.cell(row=row, column=1, value=it.stok_kodu)
-            self.ws.cell(row=row, column=2, value=it.miktar)
-            self.ws.cell(row=row, column=3, value=it.grup)
+            # Direct write without safe_write to avoid unmerge-remerge issues
+            # Note: We get the cell object first, then set value
+            # This prevents "MergedCell" attribute errors
+            cell1 = self.ws.cell(row=row, column=1)
+            cell2 = self.ws.cell(row=row, column=2)
+            cell3 = self.ws.cell(row=row, column=3)
+            
+            # Check if cells are merged (MergedCell type)
+            from openpyxl.cell.cell import MergedCell
+            if not isinstance(cell1, MergedCell):
+                cell1.value = it.stok_kodu
+            if not isinstance(cell2, MergedCell):
+                cell2.value = it.miktar
+            if not isinstance(cell3, MergedCell):
+                cell3.value = it.grup
+            
             row += 1
             written += 1
         return written
@@ -487,63 +500,8 @@ class ImprovedLojistikWriter(LojistikTemplateWriter):
                 cell = self.ws.cell(row=row, column=col)
                 cell.value = str(t).strip()
                 
-                # Auto-adjust font size to fit cell
-                # Get cell dimensions
-                try:
-                    from openpyxl.styles import Font
-                    
-                    # Get column width (Excel units: 1 unit ≈ 7 pixels for default font)
-                    col_letter = openpyxl.utils.get_column_letter(col)
-                    col_width = self.ws.column_dimensions[col_letter].width
-                    if col_width is None or col_width == 0:
-                        col_width = 8.43  # Default Excel column width
-                    
-                    # Get row height
-                    row_height = self.ws.row_dimensions[row].height
-                    if row_height is None or row_height == 0:
-                        row_height = 15  # Default Excel row height
-                    
-                    # Calculate approximate character capacity
-                    # Excel column width is in "character widths", roughly 7 pixels per unit
-                    # Average character takes about 0.7-1.0 width units at size 11
-                    text_length = len(str(t).strip())
-                    
-                    # Start with default font size (11)
-                    base_font_size = 11
-                    min_font_size = 6  # Don't go below this
-                    
-                    # Rough estimate: 1 width unit fits ~1.2 characters at size 11
-                    chars_per_width = 1.2
-                    available_chars = col_width * chars_per_width
-                    
-                    # If text is too long, shrink font proportionally
-                    if text_length > available_chars:
-                        # Calculate required font size to fit text in current cell width
-                        ratio = available_chars / text_length
-                        new_font_size = max(min_font_size, int(base_font_size * ratio))
-                        
-                        # Apply font - preserve existing font properties
-                        if cell.font:
-                            cell.font = Font(
-                                name=cell.font.name,
-                                size=new_font_size,
-                                bold=cell.font.bold,
-                                italic=cell.font.italic,
-                                color=cell.font.color
-                            )
-                        else:
-                            cell.font = Font(size=new_font_size)
-                    else:
-                        # Text fits with default size
-                        if not cell.font or cell.font.size is None:
-                            cell.font = Font(size=base_font_size)
-                    
-                    # IMPORTANT: Do NOT enable text wrapping or change cell dimensions
-                    # Keep cell row height and column width unchanged - only adjust font size
-                        
-                except Exception:
-                    # If auto-sizing fails, just write the value without formatting
-                    pass
+                # Enable text wrapping for long product names
+                cell.alignment = openpyxl.styles.Alignment(wrap_text=True)
                 
                 row += 1
                 written += 1
@@ -729,6 +687,91 @@ def clear_workbook_values(path: str) -> int:
     return cleared
 
 
+def clear_tatli_values(path: str) -> int:
+    """Clear tatlı file data cells and sepet (basket) counts in row 1.
+    
+    Clears:
+    1. Row 1 sepet values (basket counts) for each branch
+    2. Data cells (TEPSI, ADET columns) starting from row 3
+    
+    Preserves:
+    - Product names (column 1)
+    - Headers (row 2)
+    - Formulas
+    - Merged cell structures
+    """
+    if not os.path.exists(path):
+        return 0
+    
+    wb = openpyxl.load_workbook(path)
+    cleared = 0
+    
+    for ws in wb.worksheets:
+        # Step 1: Read branch columns from row 2 headers
+        subeler = {}
+        for cell in ws[2][1:]:  # Skip first column (product names)
+            if cell.value:
+                sube_ad = str(cell.value).strip()
+                # Each branch has 4 columns: TEPSI, TEPSI_2, ADET, ADET_2
+                subeler[sube_ad] = {
+                    "tepsi": cell.column,
+                    "tepsi_2": cell.column + 1,
+                    "adet": cell.column + 2,
+                    "adet_2": cell.column + 3
+                }
+        
+        # Step 2: Clear row 1 sepet values for each branch
+        # Sepet is written to the first column of each branch (TEPSI column)
+        for sube in subeler.values():
+            sepet_col = sube["tepsi"]
+            
+            # Find the cell to clear (handle merged cells properly)
+            # mr.bounds returns (min_col, min_row, max_col, max_row)
+            target_cell = ws.cell(row=1, column=sepet_col)
+            
+            # Check if this cell is part of a merged range
+            for mr in ws.merged_cells.ranges:
+                # bounds format: (min_col, min_row, max_col, max_row)
+                if (mr.min_row <= 1 <= mr.max_row) and (mr.min_col <= sepet_col <= mr.max_col):
+                    # This cell is in a merged range, use the master (top-left)
+                    target_cell = ws.cell(row=mr.min_row, column=mr.min_col)
+                    break
+            
+            # Clear value if it exists
+            if target_cell.value not in (None, ""):
+                target_cell.value = None
+                cleared += 1
+        
+        # Step 3: Clear data cells (rows 3+)
+        for row in ws.iter_rows(min_row=3, max_row=ws.max_row, max_col=1):
+            ana_cell = row[0]
+            if not ana_cell.value:
+                continue
+            
+            # Skip special rows (headers like "SIPARIS TARIHI", etc.)
+            ana_ad = str(ana_cell.value).upper()
+            skip_keywords = ["SIPARIS TARIHI", "SIPARIS ALAN", "TESLIM TARIHI", "TEYID EDEN"]
+            if any(ana_ad.startswith(k) or ana_ad == k for k in skip_keywords):
+                continue
+            
+            # Clear TEPSI, TEPSI_2, ADET, ADET_2 cells for this product
+            for sube in subeler.values():
+                for col in [sube["tepsi"], sube["tepsi_2"], sube["adet"], sube["adet_2"]]:
+                    cell = ws.cell(row=ana_cell.row, column=col)
+                    
+                    # Skip formulas
+                    if isinstance(cell.value, str) and cell.value.startswith('='):
+                        continue
+                    
+                    # Clear value
+                    if cell.value not in (None, ""):
+                        cell.value = None
+                        cleared += 1
+    
+    wb.save(path)
+    return cleared
+
+
 def clear_lojistik_values(path: str) -> int:
     """Clear only data cells in lojistik file, preserving branch headers and yellow-highlighted cells.
     
@@ -823,14 +866,31 @@ def clear_donuk_values(path: str) -> int:
                         pass
                     
                     # Case 3: Text containing product name with quantity
-                    # Pattern: "KÜNEFE = 5", "KÜNEFE  5", "ŞERBET = 10"
+                    # Pattern: "KÜNEFE = 5", "KÜNEFE  5", "ŞERBET = 10", "CITIR MANTI  3"
                     # We want to keep only the product name part
                     if "=" in cell.value or re.search(r'\s+\d+', cell.value):
                         # Check if it contains known product keywords
                         val_up = TextNormalizer.up(cell.value)
-                        special_products = ["KUNEFE", "SERBET", "TRILECE", "ROKOKO", "EKLER", "MEYVELI"]
                         
-                        if any(prod in val_up for prod in special_products):
+                        # All DONUK products that need quantity cleanup
+                        donuk_products = [
+                            "KUNEFE", "SERBET", "TRILECE", "ROKOKO", "EKLER", "MEYVELI",
+                            # Çıtır Mantı ve sonrası ürünler
+                            "CITIR MANTI", "ÇITIR MANTI", "MANTI",
+                            "BOYOZ", "PATATES", 
+                            "HAMBURGER", "KOFTE", "KÖFTE",
+                            "TAVUK", "BUT",
+                            "BAKLAVA", "SOGUK", "CEVIZ", "TAHIN",
+                            "DANA", "ASADO",
+                            "BONFILE", "MADALYON",
+                            "SPAGETTI", "MAKARON",
+                            "USTANIN KOFTESI", "KADAYIF", "SNITSEL", "ŞINITSEL",
+                            # Makaron varyantları
+                            "CIKOLATALI", "ÇIKOLATALI", "HINDCEVIZLI", "HIND.CEVIZLI", "HIND CEV",
+                            "KARAMEL", "FRAMBUAZ", "ANTEPL", "ANTEPLI", "MERSIL", "YBNMERSIL"
+                        ]
+                        
+                        if any(prod in val_up for prod in donuk_products):
                             # Extract product name (text before = or trailing numbers)
                             match = re.match(r'^([^=]+?)(?:\s*=\s*\d+|\s+\d+\s*$)', cell.value)
                             if match:

@@ -110,7 +110,25 @@ def find_col(df: pd.DataFrame, candidates: Iterable[str]) -> Optional[str]:
     return None
 
 
-def read_branch_from_file(csv_path: str) -> Optional[str]:
+def read_branch_from_file(csv_path: str) -> tuple[Optional[str], Optional[str]]:
+    """Extract branch name from CSV file with primary and fallback options.
+    
+    Returns (primary, fallback) where:
+    - primary: Inner part from "OUTER(INNER)" format - should be tried first
+    - fallback: Outer part - use if primary doesn't match
+    
+    Example:
+    - "AYDIN(KUSADASI)" -> returns ("KUSADASI", "AYDIN")
+    - "MANISA(MEYDAN)" -> returns ("MEYDAN", "MANISA")
+    
+    The fuzzy matcher will try primary first, then fallback if no match found.
+    
+    Args:
+        csv_path: Path to CSV file
+    
+    Returns:
+        Tuple of (primary_branch, fallback_branch)
+    """
     try:
         with open(csv_path, encoding="utf-8") as f:
             for line in f:
@@ -125,24 +143,23 @@ def read_branch_from_file(csv_path: str) -> Optional[str]:
                     if "-" in part:
                         part = part.split("-", 1)[-1]
                     part = part.strip()
-                    # If parens exist, try both the inner content and the full part
-                    # e.g., "ELAZIG(ELYSIUM)" -> try "ELYSIUM" first, then "ELAZIG"
-                    # This allows matching with both Excel variations
+                    
+                    # If parens exist, return (inner, outer) for priority matching
                     m = re.search(r"^([^(]+)\(([^)]+)\)$", part)
                     if m:
-                        # Return both parts separated by | for fuzzy matching
-                        # The matching code will try both
                         outer = m.group(1).strip()
                         inner = m.group(2).strip()
-                        # Return the part before parens as primary (e.g., "ELAZIG" not "ELYSIUM")
-                        return outer
-                    # Remove trailing DEPO if present
+                        # PRIMARY: inner (parantez içi) - try this first
+                        # FALLBACK: outer (parantez dışı) - try if primary fails
+                        return (inner, outer)
+                    
+                    # No parens - return single value for both
                     if part.upper().endswith(" DEPO"):
                         part = part[:-5].strip()
-                    return part
+                    return (part, None)
     except Exception:
         pass
-    return None
+    return (None, None)
 
 # --------------------------- Excel helpers ---------------------------
 
@@ -337,51 +354,39 @@ def locate_donuk_products_block(ws: openpyxl.worksheet.worksheet.Worksheet, min_
 def safe_write(ws: openpyxl.worksheet.worksheet.Worksheet, r: int, c: int, value) -> None:
     """Write a value into worksheet cell (r,c) safely handling merged cells.
 
-    If the target is inside a merged range, write into the master cell. If
-    writing fails due to openpyxl merged-cell restrictions, unmerge the range,
-    write the value into the top-left master cell, then re-merge the same range.
-    This preserves the layout while ensuring the value is written.
+    If the target is inside a merged range, write into the master cell.
+    Does NOT unmerge cells to avoid corrupting the template structure.
     """
-    # Prefer to write directly; if the target is part of a merged range, perform
-    # a safe unmerge->write->remerge cycle which avoids openpyxl "MergedCell"
-    # read-only exceptions on some templates.
-    try:
-        ws.cell(row=r, column=c).value = value
-        return
-    except Exception:
-        pass
-
-    merged = is_merged_at(ws, r, c)
-    if not merged:
-        # last attempt: direct write
+    # First attempt: direct write to the target cell
+    cell = ws.cell(row=r, column=c)
+    
+    # Check if it's a MergedCell (read-only)
+    from openpyxl.cell.cell import MergedCell
+    if isinstance(cell, MergedCell):
+        # Find the merged range and write to master cell
+        merged = is_merged_at(ws, r, c)
+        if merged:
+            min_row, min_col, max_row, max_col = merged
+            master = ws.cell(row=min_row, column=min_col)
+            try:
+                master.value = value
+                return
+            except Exception:
+                # If master cell write fails, give up
+                # Do NOT unmerge as it corrupts the template
+                return
+    else:
+        # Regular cell, just write
         try:
-            ws.cell(row=r, column=c).value = value
+            cell.value = value
             return
         except Exception:
-            return
-
-    min_row, min_col, max_row, max_col = merged
-    # Try writing to the master cell first; if that fails, unmerge, write and remerge
-    try:
-        ws.cell(row=min_row, column=min_col).value = value
-        return
-    except Exception:
-        pass
-
-    # Fallback: unmerge -> write -> remerge. This preserves the merged layout while
-    # ensuring the value is applied to a writable cell object.
-    try:
-        ws.unmerge_cells(start_row=min_row, start_column=min_col, end_row=max_row, end_column=max_col)
-        ws.cell(row=min_row, column=min_col).value = value
-        ws.merge_cells(start_row=min_row, start_column=min_col, end_row=max_row, end_column=max_col)
-        return
-    except Exception:
-        # Give up silently; caller may handle logging
-        try:
-            ws.cell(row=r, column=c).value = value
-        except Exception:
-            pass
-        return
+            # Last attempt with explicit cell access
+            try:
+                ws.cell(row=r, column=c).value = value
+                return
+            except Exception:
+                return
 
 
 def find_branch_span(ws: openpyxl.worksheet.worksheet.Worksheet, branch_name: str) -> Optional[Tuple[int, int, int]]:
@@ -488,11 +493,13 @@ def append_text_with_space(text: str, qty, sep: str = "    ") -> str:
 def find_size_columns(ws: openpyxl.worksheet.worksheet.Worksheet, min_c: int, max_c: int, row_hint: int) -> Dict[str, Optional[int]]:
     sizes: Dict[str, Optional[int]] = {"35KG": None, "350GR": None, "150GR": None}
     def scan_rows(r1: int, r2: int):
-        # If span width is 1, allow scanning a few columns to the right for unit headers
+        # Scan within branch span, plus small margin (max 4 columns) for size headers
         c_start = max(1, min_c)
         c_end = min(ws.max_column, max_c if max_c >= min_c else min_c)
+        # Allow small expansion but respect max_c limit to avoid crossing into next branch
+        # For single-column spans, add small margin (up to 4 cols) but cap at max_c + 4
         if c_start == c_end and c_end < ws.max_column:
-            c_end = min(ws.max_column, c_end + 6)
+            c_end = min(ws.max_column, c_end + 4, max_c + 4)  # Limit expansion
         for r in range(max(1, r1), min(ws.max_row, r2) + 1):
             for c in range(c_start, c_end + 1):
                 v = ws.cell(row=r, column=c).value
@@ -1173,10 +1180,12 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
     if not stok_col or not miktar_col:
         raise ValueError("CSV'de 'Stok Kodu' veya 'Miktar' sütunu bulunamadı.")
 
-    branch_guess = read_branch_from_file(csv_path)
-    branch_name = branch_guess  # Use branch_guess as branch_name for text updates
+    # Extract branch name from CSV with priority: inner (primary) then outer (fallback)
+    branch_primary, branch_fallback = read_branch_from_file(csv_path)
+    branch_guess = branch_primary or branch_fallback  # For display/logging
+    branch_name = branch_guess  # Use for text updates
     if debug:
-        print(f"[DEBUG] Processing CSV for branch: {branch_name}")
+        print(f"[DEBUG] CSV Branch - Primary: '{branch_primary}', Fallback: '{branch_fallback}'")
 
     # Prepare force-donuk set (normalized) for trial runs
     force_set = set()
@@ -1191,24 +1200,72 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
     else:
         wb = Workbook()
 
-    # Select target worksheet
+    # Prepare force-donuk set (normalized) for trial runs
+    force_set = set()
+    if force_donuk:
+        for item in force_donuk:
+            if item:
+                force_set.add(normalize_text(item))
+    forced_hits = []  # collect entries that were forced to donuk handling for reporting
+
+    # Select target worksheet with priority: try primary branch first, then fallback
     ws = None
+    span = None
     if sheet_name and sheet_name in wb.sheetnames:
         ws = wb[sheet_name]
     else:
-        if branch_guess:
+        # Try primary branch first (inner part from parens)
+        if branch_primary:
             for w in wb.worksheets:
-                if find_branch_span(w, branch_guess):
+                sp = find_branch_span(w, branch_primary)
+                if sp:
                     ws = w
+                    span = sp
+                    if debug:
+                        print(f"[DEBUG] Matched PRIMARY branch '{branch_primary}' in sheet '{w.title}'")
                     break
+        
+        # If primary failed, try fallback (outer part from parens)
+        if ws is None and branch_fallback:
+            for w in wb.worksheets:
+                sp = find_branch_span(w, branch_fallback)
+                if sp:
+                    ws = w
+                    span = sp
+                    if debug:
+                        print(f"[DEBUG] Matched FALLBACK branch '{branch_fallback}' in sheet '{w.title}'")
+                    break
+        
+        # Last resort: use first sheet
         if ws is None:
             ws = wb.worksheets[0]
-
-    span = find_branch_span(ws, branch_guess) if branch_guess else None
+    
+    # Get span if not already found
+    if span is None and branch_guess:
+        span = find_branch_span(ws, branch_guess)
     if span:
         min_c, max_c, branch_row = span
-        # Genişlet arama aralığını
-        max_c = max(max_c + 4, min_c + 12)  # En az 12 kolon tara
+        
+        # Find next branch column to avoid crossing boundaries
+        next_branch_col = None
+        for c in range(max_c + 1, min(ws.max_column + 1, max_c + 15)):
+            val = ws.cell(row=branch_row, column=c).value
+            if val and str(val).strip():
+                # Check if it's a branch name (not a date/time header)
+                if not any(x in str(val).upper() for x in ["TARIH", "SIPARIS", "TESLIM"]):
+                    next_branch_col = c
+                    break
+        
+        # Expand search area but respect next branch boundary
+        if next_branch_col:
+            # Next branch exists - stop before it (leave 1 col gap)
+            max_c = min(max_c + 4, next_branch_col - 1)
+        else:
+            # Last branch - allow moderate expansion (max 8 cols)
+            max_c = min(max_c + 8, min_c + 12, ws.max_column)
+        
+        if debug:
+            print(f"[DEBUG] Expanded max_c to {max_c} (next_branch_col: {next_branch_col})")
     else:
         min_c, max_c, branch_row = 2, 14, 2  # Default olarak daha geniş bir aralık
     # Discover the actual DONDURMALAR header row and size columns near this branch span
@@ -2480,11 +2537,13 @@ def process_csv(csv_path: str, output_path: str = "sevkiyat_tatlı.xlsx", sheet_
     miktar_col = find_col(df, ["MIKTAR", "MİKTAR", "ADET"]) or "MIKTAR"
     grup_col = find_col(df, ["GRUP", "KATEGORI", "KATEGORI ADI"]) or "GRUP"
 
-    # Şube adı (CSV'den)
-    sube = read_branch_from_file(csv_path)
-    if not sube:
+    # Extract branch name from CSV with priority: inner (primary) then outer (fallback)
+    sube_primary, sube_fallback = read_branch_from_file(csv_path)
+    if not sube_primary and not sube_fallback:
         raise ValueError("CSV'den şube adı (ŞUBE KODU/ADI) tespit edilemedi.")
-    sube_norm = normalize_text(sube)
+    
+    sube_primary_norm = normalize_text(sube_primary) if sube_primary else None
+    sube_fallback_norm = normalize_text(sube_fallback) if sube_fallback else None
 
     # Tatlı şablonu/yazım dosyası
     if not os.path.exists(output_path):
@@ -2492,10 +2551,11 @@ def process_csv(csv_path: str, output_path: str = "sevkiyat_tatlı.xlsx", sheet_
     wb = load_workbook(output_path)
 
     # Doğru sheet'i ve şube sütunlarını bul (2. satırda şube başlıkları)
-    # CRITICAL: If sheet_name provided, search ONLY in that sheet (multi-day branch support)
+    # PRIORITY: Try primary branch first (parantez içi), then fallback (parantez dışı)
     ws = None
     col_tepsi = None
     col_adet = None
+    matched_branch = None
     
     # Determine which sheets to search
     sheets_to_search = []
@@ -2513,31 +2573,55 @@ def process_csv(csv_path: str, output_path: str = "sevkiyat_tatlı.xlsx", sheet_
         # No sheet specified - search all sheets
         sheets_to_search = wb.worksheets
     
-    for w in sheets_to_search:
-        subeler = {}
-        # row=2, columns after first
-        for cell in w[2][1:]:
-            if cell.value:
-                sname = normalize_text(cell.value)
-                subeler[sname] = {
-                    "tepsi": cell.column,
-                    "tepsi_2": cell.column + 1,
-                    "adet": cell.column + 2,
-                    "adet_2": cell.column + 3,
-                }
-        for sname, cols in subeler.items():
-            # Fuzzy matching: exact match OR partial match (like donuk processing)
-            # This handles cases like CSV "FORUM AVM" vs Excel "FORUM" or CSV "MEYDAN" vs Excel "MEYDAN AVM"
-            if sname == sube_norm or sube_norm in sname or sname in sube_norm:
-                ws = w
-                col_tepsi = cols["tepsi"]
-                col_adet = cols["adet"]
+    # First pass: try PRIMARY branch (parantez içi)
+    if sube_primary_norm:
+        for w in sheets_to_search:
+            subeler = {}
+            for cell in w[2][1:]:  # row=2, columns after first
+                if cell.value:
+                    sname = normalize_text(cell.value)
+                    subeler[sname] = {
+                        "tepsi": cell.column,
+                        "tepsi_2": cell.column + 1,
+                        "adet": cell.column + 2,
+                        "adet_2": cell.column + 3,
+                    }
+            for sname, cols in subeler.items():
+                # Fuzzy matching
+                if sname == sube_primary_norm or sube_primary_norm in sname or sname in sube_primary_norm:
+                    ws = w
+                    col_tepsi = cols["tepsi"]
+                    col_adet = cols["adet"]
+                    matched_branch = sube_primary
+                    break
+            if ws is not None:
                 break
-        if ws is not None:
-            break
+    
+    # Second pass: if PRIMARY failed, try FALLBACK branch (parantez dışı)
+    if ws is None and sube_fallback_norm:
+        for w in sheets_to_search:
+            subeler = {}
+            for cell in w[2][1:]:
+                if cell.value:
+                    sname = normalize_text(cell.value)
+                    subeler[sname] = {
+                        "tepsi": cell.column,
+                        "tepsi_2": cell.column + 1,
+                        "adet": cell.column + 2,
+                        "adet_2": cell.column + 3,
+                    }
+            for sname, cols in subeler.items():
+                if sname == sube_fallback_norm or sube_fallback_norm in sname or sname in sube_fallback_norm:
+                    ws = w
+                    col_tepsi = cols["tepsi"]
+                    col_adet = cols["adet"]
+                    matched_branch = sube_fallback
+                    break
+            if ws is not None:
+                break
 
     if ws is None or not col_tepsi or not col_adet:
-        raise ValueError(f"Şube '{sube}' için hedef sayfa/sütunlar bulunamadı.")
+        raise ValueError(f"Şube '{sube_primary or sube_fallback}' için hedef sayfa/sütunlar bulunamadı.")
 
     # Tarih yaz (B1 benzeri: row=2, col=1)
     from datetime import datetime
