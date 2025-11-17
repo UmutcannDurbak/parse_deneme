@@ -393,29 +393,64 @@ def find_branch_span(ws: openpyxl.worksheet.worksheet.Worksheet, branch_name: st
     if not branch_name:
         return None
     up = normalize_text(branch_name)
-    # Prefer merged ranges whose master cell matches the branch
+    
+    # PASS 1: Prefer exact matches in merged ranges (avoids FOLKART matching FOLKART VEGA)
+    exact_matches = []
+    partial_matches = []
+    
     for mr in ws.merged_cells.ranges:
         min_row, min_col, max_row, max_col = mr.bounds
         v = ws.cell(row=min_row, column=min_col).value
         if not v:
             continue
         vv = normalize_text(v)
-        if vv == up or up in vv or vv in up:
-            return (min_col, max_col, min_row)
-    # Fallback: scan early rows for any cell matching
+        if vv == up:  # Exact match
+            exact_matches.append((min_col, max_col, min_row))
+        elif up in vv or vv in up:  # Partial match
+            partial_matches.append((min_col, max_col, min_row))
+    
+    # Return exact match if found
+    if exact_matches:
+        return exact_matches[0]
+    
+    # PASS 2: Scan early rows for exact matches
+    exact_cells = []
+    partial_cells = []
+    
     for r in range(1, min(25, ws.max_row) + 1):
         for c in range(1, ws.max_column + 1):
             v = ws.cell(row=r, column=c).value
             if not v:
                 continue
             vv = normalize_text(v)
-            if vv == up or up in vv or vv in up:
+            if vv == up:  # Exact match
                 # If inside a merge, return the full span
                 for mr in ws.merged_cells.ranges:
                     min_row, min_col, max_row, max_col = mr.bounds
                     if min_row <= r <= max_row and min_col <= c <= max_col:
-                        return (min_col, max_col, min_row)
-                return (c, c, r)
+                        exact_cells.append((min_col, max_col, min_row))
+                        break
+                else:
+                    exact_cells.append((c, c, r))
+            elif up in vv or vv in up:  # Partial match
+                for mr in ws.merged_cells.ranges:
+                    min_row, min_col, max_row, max_col = mr.bounds
+                    if min_row <= r <= max_row and min_col <= c <= max_col:
+                        partial_cells.append((min_col, max_col, min_row))
+                        break
+                else:
+                    partial_cells.append((c, c, r))
+    
+    # Return exact cell match if found
+    if exact_cells:
+        return exact_cells[0]
+    
+    # PASS 3: Fallback to partial matches (for backward compatibility)
+    if partial_matches:
+        return partial_matches[0]
+    if partial_cells:
+        return partial_cells[0]
+    
     return None
 
 def is_merged_at(ws: openpyxl.worksheet.worksheet.Worksheet, r: int, c: int) -> Optional[Tuple[int, int, int, int]]:
@@ -1181,11 +1216,17 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
         raise ValueError("CSV'de 'Stok Kodu' veya 'Miktar' sütunu bulunamadı.")
 
     # Extract branch name from CSV with priority: inner (primary) then outer (fallback)
-    branch_primary, branch_fallback = read_branch_from_file(csv_path)
+    branch_primary_raw, branch_fallback_raw = read_branch_from_file(csv_path)
+    
+    # Apply branch name mapping (e.g., FORUMAVM → FORUM, HARMANDALI → EFESUS)
+    from shipment_oop import BranchDecisionEngine
+    branch_primary = BranchDecisionEngine._apply_branch_mapping(branch_primary_raw) if branch_primary_raw else None
+    branch_fallback = BranchDecisionEngine._apply_branch_mapping(branch_fallback_raw) if branch_fallback_raw else None
+    
     branch_guess = branch_primary or branch_fallback  # For display/logging
     branch_name = branch_guess  # Use for text updates
     if debug:
-        print(f"[DEBUG] CSV Branch - Primary: '{branch_primary}', Fallback: '{branch_fallback}'")
+        print(f"[DEBUG] CSV Branch (after mapping) - Primary: '{branch_primary}' (raw: '{branch_primary_raw}'), Fallback: '{branch_fallback}' (raw: '{branch_fallback_raw}')")
 
     # Prepare force-donuk set (normalized) for trial runs
     force_set = set()
@@ -2538,9 +2579,14 @@ def process_csv(csv_path: str, output_path: str = "sevkiyat_tatlı.xlsx", sheet_
     grup_col = find_col(df, ["GRUP", "KATEGORI", "KATEGORI ADI"]) or "GRUP"
 
     # Extract branch name from CSV with priority: inner (primary) then outer (fallback)
-    sube_primary, sube_fallback = read_branch_from_file(csv_path)
-    if not sube_primary and not sube_fallback:
+    sube_primary_raw, sube_fallback_raw = read_branch_from_file(csv_path)
+    if not sube_primary_raw and not sube_fallback_raw:
         raise ValueError("CSV'den şube adı (ŞUBE KODU/ADI) tespit edilemedi.")
+    
+    # Apply branch name mapping (e.g., FORUMAVM → FORUM, HARMANDALI → EFESUS)
+    from shipment_oop import BranchDecisionEngine
+    sube_primary = BranchDecisionEngine._apply_branch_mapping(sube_primary_raw) if sube_primary_raw else None
+    sube_fallback = BranchDecisionEngine._apply_branch_mapping(sube_fallback_raw) if sube_fallback_raw else None
     
     sube_primary_norm = normalize_text(sube_primary) if sube_primary else None
     sube_fallback_norm = normalize_text(sube_fallback) if sube_fallback else None
@@ -2573,9 +2619,14 @@ def process_csv(csv_path: str, output_path: str = "sevkiyat_tatlı.xlsx", sheet_
         # No sheet specified - search all sheets
         sheets_to_search = wb.worksheets
     
-    # First pass: try PRIMARY branch (parantez içi)
-    if sube_primary_norm:
-        for w in sheets_to_search:
+    # Helper function for branch matching with exact match priority
+    def find_branch_columns(branch_norm: str, branch_display: str, sheets: list):
+        """Find branch columns with exact match priority (avoids FOLKART matching FOLKART VEGA)"""
+        if not branch_norm:
+            return None, None, None, None
+        
+        # PASS 1: Exact matches only
+        for w in sheets:
             subeler = {}
             for cell in w[2][1:]:  # row=2, columns after first
                 if cell.value:
@@ -2586,20 +2637,13 @@ def process_csv(csv_path: str, output_path: str = "sevkiyat_tatlı.xlsx", sheet_
                         "adet": cell.column + 2,
                         "adet_2": cell.column + 3,
                     }
+            # Exact match pass
             for sname, cols in subeler.items():
-                # Fuzzy matching
-                if sname == sube_primary_norm or sube_primary_norm in sname or sname in sube_primary_norm:
-                    ws = w
-                    col_tepsi = cols["tepsi"]
-                    col_adet = cols["adet"]
-                    matched_branch = sube_primary
-                    break
-            if ws is not None:
-                break
-    
-    # Second pass: if PRIMARY failed, try FALLBACK branch (parantez dışı)
-    if ws is None and sube_fallback_norm:
-        for w in sheets_to_search:
+                if sname == branch_norm:  # Exact match only
+                    return w, cols["tepsi"], cols["adet"], branch_display
+        
+        # PASS 2: Partial matches (backward compatibility)
+        for w in sheets:
             subeler = {}
             for cell in w[2][1:]:
                 if cell.value:
@@ -2610,15 +2654,23 @@ def process_csv(csv_path: str, output_path: str = "sevkiyat_tatlı.xlsx", sheet_
                         "adet": cell.column + 2,
                         "adet_2": cell.column + 3,
                     }
+            # Partial match pass
             for sname, cols in subeler.items():
-                if sname == sube_fallback_norm or sube_fallback_norm in sname or sname in sube_fallback_norm:
-                    ws = w
-                    col_tepsi = cols["tepsi"]
-                    col_adet = cols["adet"]
-                    matched_branch = sube_fallback
-                    break
-            if ws is not None:
-                break
+                if branch_norm in sname or sname in branch_norm:
+                    return w, cols["tepsi"], cols["adet"], branch_display
+        
+        return None, None, None, None
+    
+    # First pass: try PRIMARY branch (parantez içi)
+    ws, col_tepsi, col_adet, matched_branch = find_branch_columns(
+        sube_primary_norm, sube_primary, sheets_to_search
+    )
+    
+    # Second pass: if PRIMARY failed, try FALLBACK branch (parantez dışı)
+    if ws is None and sube_fallback_norm:
+        ws, col_tepsi, col_adet, matched_branch = find_branch_columns(
+            sube_fallback_norm, sube_fallback, sheets_to_search
+        )
 
     if ws is None or not col_tepsi or not col_adet:
         raise ValueError(f"Şube '{sube_primary or sube_fallback}' için hedef sayfa/sütunlar bulunamadı.")

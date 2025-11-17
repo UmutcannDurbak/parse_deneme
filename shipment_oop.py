@@ -46,6 +46,7 @@ KUŞADASI_HINTS = ["KUSADASI", "KUŞADASI", "AYDIN"]
 BRANCH_NAME_MAPPING = {
     "HARMANDALI": "EFESUS",      # CSV: IZMIR(HARMANDALI) → Excel: EFESUS
     "FORUMAVM": "FORUM",          # CSV: IZMIR(FORUMAVM) → Excel: FORUM
+    "FORUM AVM": "FORUM",         # CSV: IZMIR(FORUM AVM) → Excel: FORUM (space variant)
     "FOLKARTVEGA": "FOLKART VEGA", # CSV: IZMIR(FOLKARTVEGA) → Excel: FOLKART VEGA
 }
 
@@ -161,15 +162,39 @@ class BranchDecisionEngine:
             return branch_name
         
         branch_up = TextNormalizer.up(branch_name)
+        # Normalized version without spaces/punctuation for robust comparisons
+        import re
+        def norm(s: str) -> str:
+            return re.sub(r"[^A-Z0-9]", "", TextNormalizer.up(s))
+        branch_norm = norm(branch_up)
         
         # Check exact matches first
         if branch_up in BRANCH_NAME_MAPPING:
             return BRANCH_NAME_MAPPING[branch_up]
+        # Check normalized equality against mapping keys
+        for k, v in BRANCH_NAME_MAPPING.items():
+            if norm(k) == branch_norm:
+                return v
         
         # Check if any mapping key is contained in the branch name
         for csv_name, excel_name in BRANCH_NAME_MAPPING.items():
             if csv_name in branch_up:
                 return excel_name
+            # normalized containment (handles FORUM AVM vs FORUMAVM etc.)
+            if norm(csv_name) in branch_norm:
+                return excel_name
+
+        # Common suffix cleanup (e.g., " AVM") then retry exact/mapping
+        if branch_up.endswith(" AVM"):
+            trimmed = branch_up[:-4].strip()
+            if trimmed in BRANCH_NAME_MAPPING:
+                return BRANCH_NAME_MAPPING[trimmed]
+            for k, v in BRANCH_NAME_MAPPING.items():
+                if norm(k) == norm(trimmed):
+                    return v
+            # If trimming AVM leads to a known multi-day branch, return trimmed
+            if trimmed in MULTI_DAY_BRANCHES:
+                return trimmed
         
         return branch_name
 
@@ -441,39 +466,16 @@ class ImprovedLojistikWriter(LojistikTemplateWriter):
         assert self.ws is not None
         up = TextNormalizer.up(branch_name)
         
-        # Enhanced branch matching with better fuzzy logic
-        best_c = None
-        best_score = 0
-        
-        # Search in first 3 rows for branch headers
+        # Strict matching: prefer exact header, otherwise add new column
+        # This avoids writing FOLKART into FOLKART VEGA or vice versa
         for r in range(1, min(4, self.ws.max_row + 1)):
             for c in range(1, self.ws.max_column + 1):
                 v = self.ws.cell(row=r, column=c).value
                 if not v:
                     continue
-                    
                 vv = TextNormalizer.up(str(v))
-                
-                # Exact match
                 if vv == up:
                     return c
-                
-                # Check if branch name is contained in cell value or vice versa
-                if up in vv or vv in up:
-                    return c
-                
-                # Fuzzy matching with word intersection
-                hint_words = set(up.split())
-                cell_words = set(vv.split())
-                common = len(hint_words & cell_words)
-                
-                if common > best_score and common > 0:
-                    best_score = common
-                    best_c = c
-        
-        # If found a good match, use it
-        if best_c is not None and best_score > 0:
-            return best_c
         
         # If no match found, add new column
         col = self.ws.max_column + 1
@@ -620,7 +622,9 @@ class ShipmentCoordinator:
                 pass
             return None
 
-        branch_name = read_branch_from_file(csv_path) or rdr.get_branch_name() or "GENEL"
+        branch_name_raw = read_branch_from_file(csv_path) or rdr.get_branch_name() or "GENEL"
+        # Apply branch name mapping (e.g., HARMANDALI → EFESUS) for consistency
+        branch_name = BranchDecisionEngine._apply_branch_mapping(branch_name_raw)
         # Groups mapped as per design doc: SARF MALZEME, KURABIYE, CIKOLATA - HEDIYELIK, ICECEK
         include_keys = ["SARF", "KURABIYE", "CIKOLATA", "HEDIYELIK", "ICECEK", "İCECEK", "İÇECEK"]
         rows = [r for r in rdr.iter_rows() if any(k in TextNormalizer.up(r.grup) for k in include_keys)]
