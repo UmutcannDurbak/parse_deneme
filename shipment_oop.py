@@ -41,6 +41,14 @@ IZMIR_BRANCHES = [
 IZMIR_BRANCH_HINTS = [TextNormalizer.up(b) for b in IZMIR_BRANCHES]
 KUŞADASI_HINTS = ["KUSADASI", "KUŞADASI", "AYDIN"]
 
+# CSV'den gelen özel şube isimleri → Excel'deki standart isimler
+# Bu mapping sayesinde HARMANDALI→EFESUS, FORUMAVM→FORUM gibi dönüşümler yapılır
+BRANCH_NAME_MAPPING = {
+    "HARMANDALI": "EFESUS",      # CSV: IZMIR(HARMANDALI) → Excel: EFESUS
+    "FORUMAVM": "FORUM",          # CSV: IZMIR(FORUMAVM) → Excel: FORUM
+    "FOLKARTVEGA": "FOLKART VEGA", # CSV: IZMIR(FOLKARTVEGA) → Excel: FOLKART VEGA
+}
+
 # Birden fazla sevkiyat günü olan şubeler ve hangi Excel sayfalarında bulundukları
 # Format: {branch_normalized: [list of possible sheet names]}
 MULTI_DAY_BRANCHES = {
@@ -142,8 +150,28 @@ class CsvOrderReader:
 # ------------------ Branch Decision Engine ------------------
 class BranchDecisionEngine:
     def __init__(self, branch_name: Optional[str]):
-        self.branch_name = branch_name or ""
+        # Apply branch name mapping for special cases
+        self.branch_name = self._apply_branch_mapping(branch_name or "")
         self.branch_up = TextNormalizer.up(self.branch_name)
+    
+    @staticmethod
+    def _apply_branch_mapping(branch_name: str) -> str:
+        """Apply special branch name mappings (e.g., HARMANDALI→EFESUS)."""
+        if not branch_name:
+            return branch_name
+        
+        branch_up = TextNormalizer.up(branch_name)
+        
+        # Check exact matches first
+        if branch_up in BRANCH_NAME_MAPPING:
+            return BRANCH_NAME_MAPPING[branch_up]
+        
+        # Check if any mapping key is contained in the branch name
+        for csv_name, excel_name in BRANCH_NAME_MAPPING.items():
+            if csv_name in branch_up:
+                return excel_name
+        
+        return branch_name
 
     def segment(self) -> str:
         up = self.branch_up

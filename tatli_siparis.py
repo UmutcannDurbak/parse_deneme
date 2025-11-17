@@ -30,7 +30,7 @@ except ImportError:
 
 # PyInstaller ile build ederken .ico dosyasını eklemeyi unutmayın!
 ICON_PATH = "appicon.ico"
-VERSION = "v1.3.5"
+VERSION = "v1.3.6"
 DEVELOPER = "Developer U.D"
 
 # Güncelleme ayarları
@@ -94,19 +94,21 @@ def download_github_update(download_url, progress_callback=None):
 
 def install_update():
     """Install update from update.zip.
-    If running as a frozen exe, extracts to temp and launches a batch updater to replace the running exe.
+    Returns (success: bool, bat_path: str|None, updater_message: str)
+    If running as a frozen exe, extracts to temp and creates batch updater.
     Otherwise extracts only tatli_siparis.exe into current directory.
-    Returns True on success (or when updater was launched).
     """
     try:
         frozen = getattr(sys, 'frozen', False) or hasattr(sys, '_MEIPASS')
         exe_name = 'tatli_siparis.exe'
         
+        if not os.path.exists('update.zip'):
+            return False, None, 'update.zip bulunamadı'
+        
         with zipfile.ZipFile('update.zip', 'r') as z:
             # Check if update.zip has the exe
             if exe_name not in z.namelist():
-                print('Kurulum hatası: ZIP içinde exe bulunamadı')
-                return False
+                return False, None, 'ZIP içinde exe bulunamadı'
             
             if frozen:
                 import tempfile
@@ -115,29 +117,51 @@ def install_update():
                 z.extract(exe_name, tmpdir)
                 extracted_exe = os.path.join(tmpdir, exe_name)
                 
+                if not os.path.exists(extracted_exe):
+                    return False, None, 'Çıkarılan exe bulunamadı'
+                
                 # Create batch updater
                 bat_path = os.path.join(tmpdir, 'updater.bat')
-                target_dir = os.path.dirname(sys.executable) or os.path.abspath('.')
+                target_dir = os.path.dirname(sys.executable)
+                target_exe = os.path.join(target_dir, exe_name)
+                
                 bat = f'''@echo off
+echo Güncelleme baslatiliyor...
 timeout /t 2 /nobreak >nul
 :waitloop
-tasklist /FI "IMAGENAME eq {exe_name}" | find /I "{exe_name}" >nul
+tasklist /FI "IMAGENAME eq {exe_name}" 2>nul | find /I "{exe_name}" >nul
 if %ERRORLEVEL%==0 (
   timeout /t 1 /nobreak >nul
   goto waitloop
 )
-copy /Y "{extracted_exe}" "{os.path.join(target_dir, exe_name)}" >nul
-start "" "{os.path.join(target_dir, exe_name)}"
-rmdir /S /Q "{tmpdir}"
-del "%~f0" /Q
+echo Eski exe yedekleniyor...
+if exist "{target_exe}" (
+  copy /Y "{target_exe}" "{target_exe}.backup" >nul 2>&1
+)
+echo Yeni exe kopyalaniyor...
+copy /Y "{extracted_exe}" "{target_exe}" >nul
+if %ERRORLEVEL%==0 (
+  echo Güncelleme basarili! Uygulama yeniden baslatiliyor...
+  timeout /t 1 /nobreak >nul
+  start "" "{target_exe}"
+) else (
+  echo Güncelleme hatasi!
+  pause
+)
+echo Gecici dosyalar temizleniyor...
+rmdir /S /Q "{tmpdir}" >nul 2>&1
+del "%~f0" /Q >nul 2>&1
 '''
                 with open(bat_path, 'w', encoding='utf-8') as f:
                     f.write(bat)
+                
+                # Clean up the update zip
                 try:
-                    subprocess.Popen(['cmd', '/c', 'start', '/min', bat_path], shell=False)
-                except Exception as e:
-                    print(f'Updater başlatılamadı: {e}')
-                    return False
+                    os.remove('update.zip')
+                except:
+                    pass
+                    
+                return True, bat_path, 'Batch updater hazır'
 
             else:
                 # Non-frozen: backup existing exe and extract only the new exe
@@ -145,18 +169,17 @@ del "%~f0" /Q
                     shutil.copy(exe_name, f'{exe_name}.backup')
                 # Extract only the exe file
                 z.extract(exe_name)
-
-        # Clean up the update zip
-        try:
-            os.remove('update.zip')
-        except:
-            pass
-            
-        return True
+                
+                # Clean up the update zip
+                try:
+                    os.remove('update.zip')
+                except:
+                    pass
+                    
+                return True, None, 'Non-frozen güncelleme tamamlandı'
 
     except Exception as e:
-        print(f"Kurulum hatası: {e}")
-        return False
+        return False, None, f"Kurulum hatası: {e}"
 def check_for_updates(silent=False):
     """Background check for updates. If AUTO_START_DOWNLOAD is True, will auto-download and install.
     Returns True if an update was applied/launched, False otherwise.
@@ -527,9 +550,9 @@ def open_file(path: str):
     except Exception as e:
         messagebox.showerror("Hata", str(e))
 
-def show_update_window():
+def show_update_window(parent=None):
     """Güncelleme penceresini gösterir"""
-    update_window = tk.Toplevel()
+    update_window = tk.Toplevel(parent)
     update_window.title("Güncelleme Kontrolü")
     update_window.geometry("500x400")
     update_window.resizable(False, False)
@@ -702,72 +725,54 @@ def show_update_window():
         
         def install_thread():
             try:
-                success = install_update()
-                # Eğer uygulama PyInstaller ile paketlenmiş/frozen ise,
-                # güvenli bir şekilde exe'yi değiştirmek için bir batch updater kullanıyoruz.
-                frozen = getattr(sys, 'frozen', False) or hasattr(sys, '_MEIPASS')
-
-                if frozen:
-                    import tempfile
-                    tmpdir = tempfile.mkdtemp()
-                    with zipfile.ZipFile('update.zip', 'r') as zip_ref:
-                        zip_ref.extractall(tmpdir)
-
-                    # Hedef exe adı
-                    exe_name = 'tatli_siparis.exe'
-                    extracted_exe = os.path.join(tmpdir, exe_name)
-                    if not os.path.exists(extracted_exe):
-                        print('Kurulum hatası: ZIP içinde exe bulunamadı.')
-                        return False
-
-                    # Batch script oluştur ve çalıştır: uygulama kapanmasını bekleyip exe'yi kopyalayıp başlatır
-                    bat_path = os.path.join(tmpdir, 'updater.bat')
-                    # Use exe directory as target (important when running from a bundled exe)
-                    target_dir = os.path.dirname(sys.executable) or os.path.abspath('.')
-                    # Build batch script that waits for the main exe to exit, copies new exe and restarts it
-                    bat_contents = f"""@echo off
-REM Wait for the main exe to exit, then copy new exe and start it
-timeout /t 2 /nobreak >nul
-:waitloop
-tasklist /FI "IMAGENAME eq {exe_name}" | find /I "{exe_name}" >nul
-if %ERRORLEVEL%==0 (
-    timeout /t 1 /nobreak >nul
-    goto waitloop
-)
-echo Replacing exe...
-copy /Y "{extracted_exe}" "{os.path.join(target_dir, exe_name)}" >nul
-start "" "{os.path.join(target_dir, exe_name)}"
-REM cleanup
-rmdir /S /Q "{tmpdir}"
-del "%~f0" /Q
-"""
-
-                    with open(bat_path, 'w', encoding='utf-8') as f:
-                        f.write(bat_contents)
-
-                    # Launch the updater batch and exit
-                    try:
-                        # Use start to run in separate process
-                        subprocess.Popen(['cmd', '/c', 'start', '/min', bat_path], shell=False)
-                    except Exception as e:
-                        print(f'Updater başlatılamadı: {e}')
-                        return False
-
-                    # Temizle: ZIP'i sil (bizim kopyamız)
-                    try:
-                        os.remove('update.zip')
-                    except:
-                        pass
-
-                    status_label.config(text="✅ Kurulum başlatıldı", fg="green")
-                    log_message("✅ Kurulum işlemi başlatıldı. Uygulama yeniden başlatılacak.")
+                success, bat_path, message = install_update()
+                
+                if not success:
+                    status_label.config(text="❌ Kurulum hatası", fg="red")
+                    log_message(f"❌ Kurulum hatası: {message}")
                     install_button.config(state=tk.NORMAL)
                     return
-
-                # Non-frozen case: install_update() should have handled extraction
-                status_label.config(text="✅ Kurulum tamamlandı", fg="green")
-                log_message("✅ Kurulum tamamlandı.")
-                install_button.config(state=tk.NORMAL)
+                
+                frozen = getattr(sys, 'frozen', False) or hasattr(sys, '_MEIPASS')
+                
+                if frozen and bat_path:
+                    # Launch the updater batch script
+                    try:
+                        log_message("🔄 Güncelleme scripti başlatılıyor...")
+                        subprocess.Popen(['cmd', '/c', bat_path], shell=False, creationflags=subprocess.CREATE_NO_WINDOW)
+                        log_message("✅ Güncelleme başlatıldı. Uygulama kapatılıyor...")
+                        status_label.config(text="✅ Güncelleme başlatıldı", fg="green")
+                        
+                        # Ana pencereyi güncelle ve kapat
+                        update_window.update()
+                        
+                        # Ana uygulamayı ve güncelleme penceresini kapat
+                        def cleanup_and_exit():
+                            try:
+                                update_window.destroy()
+                            except:
+                                pass
+                            try:
+                                if parent:
+                                    parent.quit()
+                                    parent.destroy()
+                            except:
+                                pass
+                            sys.exit(0)
+                        
+                        update_window.after(1000, cleanup_and_exit)
+                        
+                    except Exception as e:
+                        log_message(f"❌ Updater başlatılamadı: {e}")
+                        install_button.config(state=tk.NORMAL)
+                        return
+                else:
+                    # Non-frozen case
+                    status_label.config(text="✅ Kurulum tamamlandı", fg="green")
+                    log_message("✅ Kurulum tamamlandı.")
+                    log_message("ℹ️ Lütfen uygulamayı yeniden başlatın.")
+                    install_button.config(state=tk.NORMAL)
+                    
             except Exception as e:
                 status_label.config(text="❌ Kurulum hatası", fg="red")
                 log_message(f"❌ Hata: {e}")
@@ -899,7 +904,7 @@ def main():
         font=("Arial", 11, "bold"),
         bg="#28A745",
         fg="white",
-        command=show_update_window
+        command=lambda: show_update_window(root)
     )
     update_btn.grid(row=0, column=2, padx=10)
     
