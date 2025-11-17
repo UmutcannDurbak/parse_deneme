@@ -48,6 +48,8 @@ BRANCH_NAME_MAPPING = {
     "FORUMAVM": "FORUM",          # CSV: IZMIR(FORUMAVM) → Excel: FORUM
     "FORUM AVM": "FORUM",         # CSV: IZMIR(FORUM AVM) → Excel: FORUM (space variant)
     "FOLKARTVEGA": "FOLKART VEGA", # CSV: IZMIR(FOLKARTVEGA) → Excel: FOLKART VEGA
+    "ELYSIUM": "ELAZIG",          # CSV: ELYSIUM → Excel: ELAZIG
+    "MEYDAN AVM": "MEYDAN",       # CSV: MEYDAN AVM → Excel: MEYDAN
 }
 
 # Birden fazla sevkiyat günü olan şubeler ve hangi Excel sayfalarında bulundukları
@@ -466,8 +468,7 @@ class ImprovedLojistikWriter(LojistikTemplateWriter):
         assert self.ws is not None
         up = TextNormalizer.up(branch_name)
         
-        # Strict matching: prefer exact header, otherwise add new column
-        # This avoids writing FOLKART into FOLKART VEGA or vice versa
+        # PASS 1: Exact match only (avoids FOLKART matching FOLKART VEGA)
         for r in range(1, min(4, self.ws.max_row + 1)):
             for c in range(1, self.ws.max_column + 1):
                 v = self.ws.cell(row=r, column=c).value
@@ -476,6 +477,29 @@ class ImprovedLojistikWriter(LojistikTemplateWriter):
                 vv = TextNormalizer.up(str(v))
                 if vv == up:
                     return c
+        
+        # PASS 2: Partial match with containment (like Tatli/Donuk logic)
+        # This helps ELYSIUM find ELAZIG, MEYDAN find MEYDAN AVM etc.
+        best_c = None
+        best_score = 0
+        for r in range(1, min(4, self.ws.max_row + 1)):
+            for c in range(1, self.ws.max_column + 1):
+                v = self.ws.cell(row=r, column=c).value
+                if not v:
+                    continue
+                vv = TextNormalizer.up(str(v))
+                
+                # Check substring containment in both directions
+                if up in vv or vv in up:
+                    # Prefer shorter match to avoid FOLKART matching FOLKART VEGA
+                    # when both contain each other
+                    score = min(len(up), len(vv))
+                    if score > best_score:
+                        best_score = score
+                        best_c = c
+        
+        if best_c is not None:
+            return best_c
         
         # If no match found, add new column
         col = self.ws.max_column + 1

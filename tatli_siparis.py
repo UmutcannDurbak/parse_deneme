@@ -30,7 +30,7 @@ except ImportError:
 
 # PyInstaller ile build ederken .ico dosyasını eklemeyi unutmayın!
 ICON_PATH = "appicon.ico"
-VERSION = "v1.3.8"
+VERSION = "v1.3.9"
 DEVELOPER = "Developer U.D"
 
 # Güncelleme ayarları
@@ -739,28 +739,42 @@ def show_update_window(parent=None):
                     # Launch the updater batch script
                     try:
                         log_message("🔄 Güncelleme scripti başlatılıyor...")
+                        # Start batch updater in background
                         subprocess.Popen(['cmd', '/c', bat_path], shell=False, creationflags=subprocess.CREATE_NO_WINDOW)
                         log_message("✅ Güncelleme başlatıldı. Uygulama kapatılıyor...")
                         status_label.config(text="✅ Güncelleme başlatıldı", fg="green")
                         
-                        # Ana pencereyi güncelle ve kapat
+                        # Force immediate update of UI
+                        update_window.update_idletasks()
                         update_window.update()
                         
-                        # Ana uygulamayı ve güncelleme penceresini kapat
-                        def cleanup_and_exit():
+                        # Schedule immediate closure
+                        def force_exit():
+                            """Force application exit to allow updater to run"""
                             try:
+                                # Destroy all windows
+                                for widget in update_window.winfo_children():
+                                    widget.destroy()
+                                update_window.quit()
                                 update_window.destroy()
                             except:
                                 pass
+                            
                             try:
                                 if parent:
+                                    for widget in parent.winfo_children():
+                                        widget.destroy()
                                     parent.quit()
                                     parent.destroy()
                             except:
                                 pass
-                            sys.exit(0)
+                            
+                            # Force process termination
+                            import os
+                            os._exit(0)
                         
-                        update_window.after(1000, cleanup_and_exit)
+                        # Exit after 500ms (give batch script time to start)
+                        update_window.after(500, force_exit)
                         
                     except Exception as e:
                         log_message(f"❌ Updater başlatılamadı: {e}")
