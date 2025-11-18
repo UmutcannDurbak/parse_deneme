@@ -30,7 +30,7 @@ except ImportError:
 
 # PyInstaller ile build ederken .ico dosyasını eklemeyi unutmayın!
 ICON_PATH = "appicon.ico"
-VERSION = "v1.3.9"
+VERSION = "v1.3.20"
 DEVELOPER = "Developer U.D"
 
 # Güncelleme ayarları
@@ -93,90 +93,147 @@ def download_github_update(download_url, progress_callback=None):
 
 
 def install_update():
-    """Install update from update.zip.
-    Returns (success: bool, bat_path: str|None, updater_message: str)
-    If running as a frozen exe, extracts to temp and creates batch updater.
-    Otherwise extracts only tatli_siparis.exe into current directory.
+    """Simple and reliable update: Use VBScript (UTF-16 + 8.3 paths) for silent updates.
+    Returns (success: bool, updater_path: str|None, message: str)
     """
     try:
         frozen = getattr(sys, 'frozen', False) or hasattr(sys, '_MEIPASS')
-        exe_name = 'tatli_siparis.exe'
-        
+
         if not os.path.exists('update.zip'):
             return False, None, 'update.zip bulunamadı'
-        
+
         with zipfile.ZipFile('update.zip', 'r') as z:
-            # Check if update.zip has the exe
-            if exe_name not in z.namelist():
-                return False, None, 'ZIP içinde exe bulunamadı'
-            
+            # Find any exe file in the zip
+            found_exe = None
+            for name in z.namelist():
+                if name.lower().endswith('.exe'):
+                    found_exe = name
+                    break
+
+            if not found_exe:
+                files_in_zip = ', '.join(z.namelist())
+                return False, None, f'ZIP içinde exe bulunamadı. İçerik: {files_in_zip}'
+
             if frozen:
                 import tempfile
+                import ctypes
+                from ctypes import wintypes
+
+                def get_short_path(path: str) -> str:
+                    try:
+                        GetShortPathNameW = ctypes.windll.kernel32.GetShortPathNameW
+                        GetShortPathNameW.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD]
+                        GetShortPathNameW.restype = wintypes.DWORD
+                        buf = ctypes.create_unicode_buffer(260)
+                        r = GetShortPathNameW(path, buf, 260)
+                        if r == 0:
+                            return path
+                        return buf.value
+                    except Exception:
+                        return path
+
                 tmpdir = tempfile.mkdtemp()
-                # Only extract the exe file
-                z.extract(exe_name, tmpdir)
-                extracted_exe = os.path.join(tmpdir, exe_name)
-                
-                if not os.path.exists(extracted_exe):
+
+                # Extract the new exe
+                z.extract(found_exe, tmpdir)
+                new_exe_path = os.path.join(tmpdir, found_exe)
+
+                if not os.path.exists(new_exe_path):
                     return False, None, 'Çıkarılan exe bulunamadı'
-                
-                # Create batch updater
-                bat_path = os.path.join(tmpdir, 'updater.bat')
-                target_dir = os.path.dirname(sys.executable)
-                target_exe = os.path.join(target_dir, exe_name)
-                
-                bat = f'''@echo off
-echo Güncelleme baslatiliyor...
-timeout /t 2 /nobreak >nul
-:waitloop
-tasklist /FI "IMAGENAME eq {exe_name}" 2>nul | find /I "{exe_name}" >nul
-if %ERRORLEVEL%==0 (
-  timeout /t 1 /nobreak >nul
-  goto waitloop
-)
-echo Eski exe yedekleniyor...
-if exist "{target_exe}" (
-  copy /Y "{target_exe}" "{target_exe}.backup" >nul 2>&1
-)
-echo Yeni exe kopyalaniyor...
-copy /Y "{extracted_exe}" "{target_exe}" >nul
-if %ERRORLEVEL%==0 (
-  echo Güncelleme basarili! Uygulama yeniden baslatiliyor...
-  timeout /t 1 /nobreak >nul
-  start "" "{target_exe}"
-) else (
-  echo Güncelleme hatasi!
-  pause
-)
-echo Gecici dosyalar temizleniyor...
-rmdir /S /Q "{tmpdir}" >nul 2>&1
-del "%~f0" /Q >nul 2>&1
-'''
-                with open(bat_path, 'w', encoding='utf-8') as f:
-                    f.write(bat)
-                
-                # Clean up the update zip
+
+                # Get paths
+                current_exe = sys.executable
+                # Create runnable timestamped backup alongside the exe (ends with .exe)
+                import time as _upd_time
+                exe_dir, exe_base = os.path.split(current_exe)
+                _name, _ext = os.path.splitext(exe_base)
+                backup_exe = os.path.join(exe_dir, f"{_name}_backup_{_upd_time.strftime('%Y%m%d_%H%M%S')}{_ext}")
+                current_pid = os.getpid()
+
+                # Compute 8.3 short paths to avoid Unicode issues in WSH/FSO
+                sp_new = get_short_path(new_exe_path)
+                sp_target = get_short_path(current_exe)
+                sp_backup = get_short_path(backup_exe)
+                sp_tmp = get_short_path(tmpdir)
+
+                # Create VBScript updater (no dependencies, silent, reliable)
+                vbs_script = os.path.join(tmpdir, 'updater.vbs')
+                vbs_code = (
+                    'Option Explicit\r\n'
+                    'On Error Resume Next\r\n'
+                    'Dim objFSO, objShell, objWMI\r\n'
+                    'Dim strNewExe, strTargetExe, strBackupExe, strTmpDir\r\n'
+                    'Dim intPID, intCounter, bProcessExists\r\n\r\n'
+                    'strNewExe = "' + sp_new.replace('\\', '\\\\') + '"\r\n'
+                    'strTargetExe = "' + sp_target.replace('\\', '\\\\') + '"\r\n'
+                    'strBackupExe = "' + sp_backup.replace('\\', '\\\\') + '"\r\n'
+                    'strTmpDir = "' + sp_tmp.replace('\\', '\\\\') + '"\r\n'
+                    f'intPID = {current_pid}\r\n\r\n'
+                    'Set objFSO = CreateObject("Scripting.FileSystemObject")\r\n'
+                    'Set objShell = CreateObject("WScript.Shell")\r\n'
+                    'Set objWMI = GetObject("winmgmts:{impersonationLevel=impersonate}!\\\\.\\root\\cimv2")\r\n\r\n'
+                    "For intCounter = 1 To 50\r\n"
+                    "    bProcessExists = False\r\n"
+                    "    Dim colProcesses, objProcess\r\n"
+                    "    Set colProcesses = objWMI.ExecQuery(\"SELECT * FROM Win32_Process WHERE ProcessId = \" & intPID)\r\n"
+                    "    For Each objProcess In colProcesses\r\n"
+                    "        bProcessExists = True\r\n"
+                    "        Exit For\r\n"
+                    "    Next\r\n"
+                    "    If Not bProcessExists Then Exit For\r\n"
+                    "    WScript.Sleep 100\r\n"
+                    "Next\r\n\r\n"
+                    "WScript.Sleep 1000\r\n\r\n"
+                    'If objFSO.FileExists(strTargetExe) Then objFSO.CopyFile strTargetExe, strBackupExe, True\r\n'
+                    'Err.Clear\r\n'
+                    'objFSO.CopyFile strNewExe, strTargetExe, True\r\n'
+                    'If Err.Number <> 0 Then WScript.Quit 1\r\n'
+                    'Err.Clear\r\n'
+                    'WScript.Sleep 2500\r\n'
+                    'Err.Clear\r\n'
+                    'objShell.ShellExecute strTargetExe, "", "", "open", 1\r\n'
+                    'If Err.Number <> 0 Then\r\n'
+                    '    Dim dt, st, cmdCreate\r\n'
+                    '    dt = Now + TimeSerial(0,0,10)\r\n'
+                    '    st = Right("0" & Hour(dt),2) & ":" & Right("0" & Minute(dt),2) & ":" & Right("0" & Second(dt),2)\r\n'
+                    '    cmdCreate = "schtasks /Create /F /SC ONCE /ST " & st & " /TN TatliSiparisAutoRun /TR " & Chr(34) & strTargetExe & Chr(34)\r\n'
+                    '    objShell.Run cmdCreate, 0, True\r\n'
+                    '    objShell.Run "schtasks /Run /TN TatliSiparisAutoRun", 0, False\r\n'
+                    'End If\r\n'
+                    'WScript.Sleep 2000\r\n'
+                    'objFSO.DeleteFolder strTmpDir, True\r\n'
+                    'WScript.Quit 0\r\n'
+                )
+
+                # Write as UTF-16 LE with BOM (WSH Unicode-safe)
+                with open(vbs_script, 'w', encoding='utf-16') as f:
+                    f.write(vbs_code)
+
+                # Clean up the update.zip so it doesn't get re-used
                 try:
                     os.remove('update.zip')
-                except:
+                except Exception:
                     pass
-                    
-                return True, bat_path, 'Batch updater hazır'
+
+                return True, vbs_script, 'VBScript updater hazır'
 
             else:
-                # Non-frozen: backup existing exe and extract only the new exe
-                if os.path.exists(exe_name):
-                    shutil.copy(exe_name, f'{exe_name}.backup')
-                # Extract only the exe file
-                z.extract(exe_name)
-                
-                # Clean up the update zip
+                # Non-frozen: direct update
+                current_dir = os.getcwd()
+                backup_path = os.path.join(current_dir, found_exe + '.backup')
+                target_path = os.path.join(current_dir, found_exe)
+
+                if os.path.exists(target_path):
+                    shutil.copy2(target_path, backup_path)
+
+                z.extract(found_exe, current_dir)
+
                 try:
                     os.remove('update.zip')
-                except:
+                except Exception:
                     pass
-                    
-                return True, None, 'Non-frozen güncelleme tamamlandı'
+
+                return True, None, 'Güncelleme tamamlandı'
 
     except Exception as e:
         return False, None, f"Kurulum hatası: {e}"
@@ -694,6 +751,12 @@ def show_update_window(parent=None):
                     log_message("✅ İndirme tamamlandı!")
                     install_button.config(state=tk.NORMAL)
                     update_info["download_path"] = "update.zip"
+                    
+                    # Otomatik kurulum başlat (eğer AUTO_START_DOWNLOAD aktifse)
+                    if AUTO_START_DOWNLOAD:
+                        log_message("🔁 Otomatik kurulum başlatılıyor...")
+                        # Kısa bir gecikme ile kurulum butonunu tetikle
+                        update_window.after(1000, install_button.invoke)
                 else:
                     status_label.config(text="❌ İndirme hatası", fg="red")
                     log_message("❌ İndirme başarısız!")
@@ -711,13 +774,19 @@ def show_update_window(parent=None):
         if not update_info["download_path"] or not os.path.exists(update_info["download_path"]):
             return
         
-        result = messagebox.askyesno(
-            "Güncelleme Kurulumu", 
-            "Güncelleme kurulacak ve uygulama yeniden başlatılacak.\n\nDevam etmek istiyor musunuz?"
-        )
-        
-        if not result:
-            return
+        # Sadece manuel kurulumda onay iste (otomatik kurulumda direkt başlat)
+        if not AUTO_START_DOWNLOAD:
+            result = messagebox.askyesno(
+                "Güncelleme Kurulumu", 
+                "Güncelleme kurulacak ve uygulama yeniden başlatılacak.\n\nDevam etmek istiyor musunuz?"
+            )
+            if not result:
+                return
+        else:
+            # Otomatik kurulumda bilgilendirme mesajı
+            log_message("⚠️ Güncelleme 2 saniye içinde başlatılacak...")
+            status_label.config(text="⏳ Güncelleme başlatılıyor...", fg="orange")
+            update_window.update()
         
         install_button.config(state=tk.DISABLED)
         status_label.config(text="Kuruluyor...", fg="blue")
@@ -725,6 +794,11 @@ def show_update_window(parent=None):
         
         def install_thread():
             try:
+                # Kısa gecikme (kullanıcı mesajları okusun)
+                import time
+                if AUTO_START_DOWNLOAD:
+                    time.sleep(1)
+                
                 success, bat_path, message = install_update()
                 
                 if not success:
@@ -736,45 +810,33 @@ def show_update_window(parent=None):
                 frozen = getattr(sys, 'frozen', False) or hasattr(sys, '_MEIPASS')
                 
                 if frozen and bat_path:
-                    # Launch the updater batch script
+                    # Launch the VBScript updater (bat_path is actually vbs_path)
                     try:
                         log_message("🔄 Güncelleme scripti başlatılıyor...")
-                        # Start batch updater in background
-                        subprocess.Popen(['cmd', '/c', bat_path], shell=False, creationflags=subprocess.CREATE_NO_WINDOW)
-                        log_message("✅ Güncelleme başlatıldı. Uygulama kapatılıyor...")
+                        log_message("✅ Uygulama kapatılıyor ve güncelleme uygulanıyor...")
                         status_label.config(text="✅ Güncelleme başlatıldı", fg="green")
                         
-                        # Force immediate update of UI
+                        # UI'yi güncelle
                         update_window.update_idletasks()
                         update_window.update()
                         
-                        # Schedule immediate closure
-                        def force_exit():
-                            """Force application exit to allow updater to run"""
-                            try:
-                                # Destroy all windows
-                                for widget in update_window.winfo_children():
-                                    widget.destroy()
-                                update_window.quit()
-                                update_window.destroy()
-                            except:
-                                pass
-                            
-                            try:
-                                if parent:
-                                    for widget in parent.winfo_children():
-                                        widget.destroy()
-                                    parent.quit()
-                                    parent.destroy()
-                            except:
-                                pass
-                            
-                            # Force process termination
-                            import os
-                            os._exit(0)
+                        # Start VBScript updater silently with wscript
+                        # VBScript is built into Windows, no dependencies needed
+                        subprocess.Popen(
+                            ['wscript.exe', bat_path],  # bat_path is actually vbs_path
+                            shell=False,
+                            creationflags=subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS,
+                            close_fds=True
+                        )
                         
-                        # Exit after 500ms (give batch script time to start)
-                        update_window.after(500, force_exit)
+                        # Short delay to let updater start
+                        time.sleep(0.5)
+                        
+                        # Force application termination
+                        log_message("⏹️ Uygulama kapatılıyor (PID: {})...".format(os.getpid()))
+                        
+                        # Direct exit to release file handles
+                        os._exit(0)
                         
                     except Exception as e:
                         log_message(f"❌ Updater başlatılamadı: {e}")
