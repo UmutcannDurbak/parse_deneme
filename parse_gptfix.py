@@ -1309,6 +1309,15 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
             print(f"[DEBUG] Expanded max_c to {max_c} (next_branch_col: {next_branch_col})")
     else:
         min_c, max_c, branch_row = 2, 14, 2  # Default olarak daha geniş bir aralık
+    
+    # Sheet-based override: in Kayseri-Sivas and Adana sheets, use KOLI for all non-dondurma groups
+    force_koli_all = False
+    try:
+        ws_title_norm = normalize_text(ws.title if ws else "")
+        if ("KAYSERI" in ws_title_norm and "SIVAS" in ws_title_norm) or ("ADANA" in ws_title_norm):
+            force_koli_all = True
+    except Exception:
+        force_koli_all = False
     # Discover the actual DONDURMALAR header row and size columns near this branch span
     header_row, size_cols = locate_dondurmalar_block(ws, min_c, max_c, debug)
 
@@ -1459,7 +1468,19 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
         # If we found a target, write appended text and mark processed
         if target:
             row_idx, col_idx, orig_text = target
-            new_text = append_text_with_space(orig_text, qty)
+            # Append unit for DONUK special items: default SEPET, but KAY/SIVAS & ADANA force KOLI
+            try:
+                fmt_qty = int(qty) if float(qty).is_integer() else qty
+            except Exception:
+                fmt_qty = qty
+            # Force KL. for specified products regardless of sheet override
+            force_always_kl_norm = {normalize_text(x) for x in [
+                "HAMBURGER EKMEĞİ",
+                "EKŞİ MAYALI TOST EKMEĞİ",
+                "ZERDEÇALLI TOST EKMEĞİ",
+            ]}
+            unit_text = "KL." if (matched_token in force_always_kl_norm or force_koli_all) else "SPT."
+            new_text = append_text_with_space(orig_text, f"{fmt_qty} {unit_text}")
             try:
                 safe_write(ws, row_idx, col_idx, new_text)
                 processed_products.add(clean_up)
@@ -1735,7 +1756,9 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
 
             try:
                 cell = ws.cell(row=row_idx, column=col_idx)
-                new_text = append_text_with_space(orig_text, fmt_qty)
+                # DONUK text cells: append qty and unit (SEPET by default)
+                unit_text = "KL." if force_koli_all else "SPT."
+                new_text = append_text_with_space(orig_text, f"{fmt_qty} {unit_text}")
                 
                 # Handle merged cells (use safe_write to reliably handle merges)
                 try:
@@ -1856,7 +1879,9 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
                     cell.alignment = Alignment(horizontal='right')
                 '''
                 # Format consistently: preserve original text and append qty with space (user preference)
-                new_text = append_text_with_space(orig_text, fmt_qty)
+                # MAKARON cells: always KOLI; override also KOLI
+                unit_text = "KL."
+                new_text = append_text_with_space(orig_text, f"{fmt_qty} {unit_text}")
                 
                 # Try master cell first if merged
                 master = None
@@ -1957,6 +1982,21 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
     # Explicit 4-subcolumn layout under this branch
     # Determine the 4 numeric subcolumns of this branch
     sub_cols = [min_c + i for i in range(4) if (min_c + i) <= ws.max_column]
+
+    # CRITICAL FIX: Clamp size columns to the branch's 4-column layout to prevent spillover
+    # Layout per branch group:
+    #   [0] 3,5 KG (col 1)
+    #   [1] 3,5 KG (col 2)
+    #   [2] 350 GR
+    #   [3] 150 GR
+    # If auto-detection picked headers outside this branch (e.g., next branch), override here.
+    if len(sub_cols) >= 4:
+        # Ensure 35KG points inside the first two columns of this branch
+        if size_cols.get("35KG") not in (sub_cols[0], sub_cols[1]):
+            size_cols["35KG"] = sub_cols[0]
+        # Force granular sizes to the 3rd and 4th subcolumns of THIS branch
+        size_cols["350GR"] = sub_cols[2]
+        size_cols["150GR"] = sub_cols[3]
     # Helper: find row index by label(s) in column A
     def find_row_by_label(keywords: Iterable[str]) -> Optional[int]:
         for rr in range(1, ws.max_row + 1):
@@ -2158,22 +2198,47 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
     # Clear numeric cells in Dondurmalar block
     for (r_, c_), v in aggreg.items():
         cc = resolve_numeric_col(ws, r_, c_, min_c, max_c)
+        # If this cell belongs to PASTA area, write as text with unit instead of numeric
         try:
-            safe_write(ws, r_, cc, v)
-            if debug:
-                print(f"[DEBUG] WRITE r={r_} c={cc} val={v}")
+            pasta_row_set = set([rv for rv in (pasta_rows.values() if 'pasta_rows' in locals() else []) if rv])
+            pasta_col_set = set([cv for cv in ((pasta_cols.values() if 'pasta_cols' in locals() else [])) if cv])
+        except Exception:
+            pasta_row_set, pasta_col_set = set(), set()
+
+        is_pasta_cell = (r_ in pasta_row_set) and (cc in pasta_col_set)
+
+        try:
+            if is_pasta_cell:
+                fmt_v = int(v) if float(v).is_integer() else v
+                unit_text = "KL." if force_koli_all else "SPT."
+                out_text = f"{fmt_v} {unit_text}"
+                safe_write(ws, r_, cc, out_text)
+                if debug:
+                    print(f"[DEBUG] PASTA TEXT WRITE r={r_} c={cc} val='{out_text}'")
+            else:
+                safe_write(ws, r_, cc, v)
+                if debug:
+                    print(f"[DEBUG] WRITE r={r_} c={cc} val={v}")
         except Exception as e:
             if debug:
-                print(f"[DEBUG] WRITE ERROR r={r_} c={cc} val={v} error={e}")
+                print(f"[DEBUG] WRITE ERROR r={r_} c={cc} val={'{:.2f}'.format(v) if isinstance(v,(int,float)) else v} error={e}")
             # Try to write to master cell if merged
-                try:
+            try:
+                if is_pasta_cell:
+                    fmt_v = int(v) if float(v).is_integer() else v
+                    unit_text = "KL." if force_koli_all else "SPT."
+                    out_text = f"{fmt_v} {unit_text}"
+                    safe_write(ws, r_, cc, out_text)
+                    if debug:
+                        print(f"[DEBUG] PASTA MASTER WRITE r={r_} c={cc} val='{out_text}'")
+                else:
                     # Use safe_write to attempt writing into the master cell of the merge
                     safe_write(ws, r_, cc, v)
                     if debug:
                         print(f"[DEBUG] MASTER WRITE r={r_} c={cc} val={v}")
-                except Exception as e2:
-                    if debug:
-                        print(f"[DEBUG] MASTER WRITE ERROR r={r_} c={cc} val={v} error={e2}")
+            except Exception as e2:
+                if debug:
+                    print(f"[DEBUG] MASTER WRITE ERROR r={r_} c={cc} val={v} error={e2}")
 
     # Explicit matrix writes: clear touched cells, write aggregated, mirror ŞERBET per column
     if matrix_aggreg:
@@ -2190,23 +2255,26 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
                         cell.value = None
                 except Exception:
                     pass
-        # write
+        # write (as text with unit KOLI for TOST/EKMEK/CHEESECAKE/ÇATAL BÖREK)
         for (rr, cc), v in matrix_aggreg.items():
             try:
-                safe_write(ws, rr, cc, v)
+                fmt_v = int(v) if float(v).is_integer() else v
+                unit_text = "KL."  # always KOLI for these groups; special sheets also KOLI
+                out_text = f"{fmt_v} {unit_text}"
+                safe_write(ws, rr, cc, out_text)
                 if debug:
-                    print(f"[DEBUG] MATRIX WRITE r={rr} c={cc} val={v}")
+                    print(f"[DEBUG] MATRIX WRITE r={rr} c={cc} val='{out_text}'")
             except Exception as e:
                 if debug:
-                    print(f"[DEBUG] MATRIX WRITE ERROR r={rr} c={cc} val={v} error={e}")
+                    print(f"[DEBUG] MATRIX WRITE ERROR r={rr} c={cc} val='{v}' error={e}")
                 # Try to write to master cell if merged
                 try:
-                    safe_write(ws, rr, cc, v)
+                    safe_write(ws, rr, cc, out_text)
                     if debug:
-                        print(f"[DEBUG] MATRIX MASTER WRITE r={rr} c={cc} val={v}")
+                        print(f"[DEBUG] MATRIX MASTER WRITE r={rr} c={cc} val='{out_text}'")
                 except Exception as e2:
                     if debug:
-                        print(f"[DEBUG] MATRIX MASTER WRITE ERROR r={rr} c={cc} val={v} error={e2}")
+                        print(f"[DEBUG] MATRIX MASTER WRITE ERROR r={rr} c={cc} val='{out_text}' error={e2}")
         # no direct numeric mirroring for ŞERBET; text update below
 
     # Update KÜNEFE/ŞERBET/DONUK KAR. TRİLEÇE using MEYVELI ROKOKO text update logic
@@ -2237,9 +2305,10 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
                         continue
                     upv = normalize_text(val)
                     if "KUNEFE" in upv or "KÜNEFE" in upv:
-                        # Preserve left side; append qty separated by spaces (do NOT use '=')
+                        # Preserve left side; append qty with unit (SPT. or KL.) separated by spaces (no '=')
                         text = val
-                        new_text = append_text_with_space(text, fmt_qty)
+                        unit_text = "KL." if force_koli_all else "SPT."
+                        new_text = append_text_with_space(text, f"{fmt_qty} {unit_text}")
                         try:
                             safe_write(ws, r, c, new_text)
                         except Exception:
@@ -2285,7 +2354,8 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
                     if "DONUK" in upv and ("TRILECE" in upv or "TRİLEÇE" in upv):
                         # Preserve left side; append qty separated by spaces (do NOT use '=')
                         text = val
-                        new_text = append_text_with_space(text, fmt_qty)
+                        unit_text = "KL." if force_koli_all else "SPT."
+                        new_text = append_text_with_space(text, f"{fmt_qty} {unit_text}")
                         try:
                             safe_write(ws, r, c, new_text)
                         except Exception:
@@ -2330,9 +2400,10 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
                         continue
                     upv = normalize_text(val)
                     if "SERBET" in upv or "ŞERBET" in upv:
-                        # Preserve left side; append qty separated by spaces (do NOT use '=')
+                        # Preserve left side; append qty with unit (SPT. or KL.) separated by spaces (no '=')
                         text = val
-                        new_text = append_text_with_space(text, fmt_qty)
+                        unit_text = "KL." if force_koli_all else "SPT."
+                        new_text = append_text_with_space(text, f"{fmt_qty} {unit_text}")
                         try:
                             safe_write(ws, r, c, new_text)
                         except Exception:
@@ -2379,7 +2450,8 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
                     if "ROKOKO" in upv:
                         # Preserve left side; consistently format as 'LEFT = qty'
                         text = val
-                        new_text = format_text_with_qty(text, fmt_qty)
+                        unit_text = "KL." if force_koli_all else "SPT."
+                        new_text = format_text_with_qty(text, f"{fmt_qty} {unit_text}")
                         try:
                             safe_write(ws, r, c, new_text)
                         except Exception:
@@ -2425,7 +2497,8 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
                     if "EKLER" in upv:
                         # Preserve left side; consistently format as 'LEFT = qty'
                         text = val
-                        new_text = format_text_with_qty(text, fmt_qty)
+                        unit_text = "KL." if force_koli_all else "SPT."
+                        new_text = format_text_with_qty(text, f"{fmt_qty} {unit_text}")
                         try:
                             safe_write(ws, r, c, new_text)
                         except Exception:
@@ -2750,12 +2823,25 @@ def process_csv(csv_path: str, output_path: str = "sevkiyat_tatlı.xlsx", sheet_
         if excel_ad in csv_index:
             for csv_var, csv_miktar in csv_index[excel_ad]:
                 if varyant_eslesir(excel_var, csv_var):
-                    ws.cell(row=rr, column=cc).value = csv_miktar
+                    # EKMEK KADAYIFI ve ŞEKERPARE için "TEPSİ" ekle
+                    if excel_ad in ("EKMEKKADAYIFI", "SEKERPARE"):
+                        try:
+                            fmt_qty = int(csv_miktar) if float(csv_miktar).is_integer() else csv_miktar
+                        except:
+                            fmt_qty = csv_miktar
+                        ws.cell(row=rr, column=cc).value = f"{fmt_qty} TEPSİ"
+                    else:
+                        ws.cell(row=rr, column=cc).value = csv_miktar
                     matched += 1
                     yazildi = True
                     break
                 if excel_var == "ADET" and csv_var == "TEPSI" and excel_ad in ("EKMEK KADAYIFI", "SEKERPARE"):
-                    ws.cell(row=rr, column=cc).value = csv_miktar
+                    # EKMEK KADAYIFI ve ŞEKERPARE için "TEPSİ" ekle
+                    try:
+                        fmt_qty = int(csv_miktar) if float(csv_miktar).is_integer() else csv_miktar
+                    except:
+                        fmt_qty = csv_miktar
+                    ws.cell(row=rr, column=cc).value = f"{fmt_qty} TEPSİ"
                     matched += 1
                     yazildi = True
                     break
@@ -2764,12 +2850,25 @@ def process_csv(csv_path: str, output_path: str = "sevkiyat_tatlı.xlsx", sheet_
                 if tatli_eslesir(excel_ad, csv_name):
                     for csv_var, csv_miktar in entries:
                         if varyant_eslesir(excel_var, csv_var):
-                            ws.cell(row=rr, column=cc).value = csv_miktar
+                            # EKMEK KADAYIFI ve ŞEKERPARE için "TEPSİ" ekle
+                            if excel_ad in ("EKMEKKADAYIFI", "SEKERPARE"):
+                                try:
+                                    fmt_qty = int(csv_miktar) if float(csv_miktar).is_integer() else csv_miktar
+                                except:
+                                    fmt_qty = csv_miktar
+                                ws.cell(row=rr, column=cc).value = f"{fmt_qty} TEPSİ"
+                            else:
+                                ws.cell(row=rr, column=cc).value = csv_miktar
                             matched += 1
                             yazildi = True
                             break
                         if excel_var == "ADET" and csv_var == "TEPSI" and excel_ad in ("EKMEK KADAYIFI", "SEKERPARE"):
-                            ws.cell(row=rr, column=cc).value = csv_miktar
+                            # EKMEK KADAYIFI ve ŞEKERPARE için "TEPSİ" ekle
+                            try:
+                                fmt_qty = int(csv_miktar) if float(csv_miktar).is_integer() else csv_miktar
+                            except:
+                                fmt_qty = csv_miktar
+                            ws.cell(row=rr, column=cc).value = f"{fmt_qty} TEPSİ"
                             matched += 1
                             yazildi = True
                             break
@@ -2896,6 +2995,9 @@ def process_csv(csv_path: str, output_path: str = "sevkiyat_tatlı.xlsx", sheet_
                     "sepet_col": cell.column  # Write to branch column (merged cell master)
                 }
     
+    # Products to exclude from basket calculation
+    excluded_products = ["EKMEKKADAYIFI", "SEKERPARE"]
+    
     # Calculate basket count for each branch
     for sube_name, cols in subeler.items():
         total_baskets = 0.0  # Use float for decimal calculations
@@ -2925,6 +3027,10 @@ def process_csv(csv_path: str, output_path: str = "sevkiyat_tatlı.xlsx", sheet_
             else:
                 product_key = ana_ad_norm.replace(" ", "")
             
+            # Skip excluded products (EKMEK KADAYIFI, ŞEKERPARE)
+            if product_key in excluded_products:
+                continue
+            
             # Get division value for this product
             division_value = product_divisions.get(product_key)
             if not division_value:
@@ -2935,16 +3041,7 @@ def process_csv(csv_path: str, output_path: str = "sevkiyat_tatlı.xlsx", sheet_
             is_first_five = product_key in first_five_products
             
             if is_first_five:
-                # Get TEPSI value (already a basket count)
-                tepsi_cell = ws.cell(row=row_idx, column=cols["tepsi_col"])
-                tepsi_val = tepsi_cell.value
-                if tepsi_val not in (None, "", "-"):
-                    try:
-                        tepsi_count = float(str(tepsi_val).replace(",", "."))
-                        total_baskets += tepsi_count
-                    except:
-                        pass
-                
+                # For first 5 products: ONLY use ADET column (ignore TEPSI)
                 # Get ADET value and divide
                 adet_cell = ws.cell(row=row_idx, column=cols["adet_col"])
                 adet_val = adet_cell.value
