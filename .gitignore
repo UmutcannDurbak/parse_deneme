@@ -72,6 +72,8 @@ auto_*.py
 find_*.py
 quick_*.py
 simple_*.py
+apply_*.py
+temp_*.py
 
 # Icon and packaging helpers
 appicon.ico

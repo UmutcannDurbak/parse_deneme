@@ -880,13 +880,18 @@ def clear_lojistik_values(path: str) -> int:
 
 
 def clear_donuk_values(path: str) -> int:
-    """Clear only quantity cells in donuk file, preserving product names and structure.
+    """Clear quantity/unit values from donuk file, preserving product names and structure.
     
-    Uses a simple heuristic approach:
+    Comprehensive cleaning:
     1. Skip first 2 rows (headers)
     2. Clear numeric cells (integers, floats)
-    3. For text cells containing products with quantities (e.g., "KÜNEFE = 5"), 
-       extract and keep only the product name
+    3. Clear text cells that are pure numbers (e.g., "5", "10.5")
+    4. Clean text cells containing qty/unit patterns:
+       - "KÜNEFE    2 SPT." → "KÜNEFE"
+       - "BEYAZ EKMEK    2 KL." → "BEYAZ EKMEK"
+       - "5 KL." → "" (clear pure qty cells)
+       - "ROKOKO =" → "ROKOKO =" (preserve "=" for ROKOKO/EKLER)
+    5. Preserve formulas starting with "="
     """
     if not os.path.exists(path):
         return 0
@@ -911,8 +916,11 @@ def clear_donuk_values(path: str) -> int:
                     cleared += 1
                     continue
                 
-                # Case 2: String that can be parsed as number - clear it
+                # Case 2: Process text cells
                 if isinstance(cell.value, str) and cell.value.strip():
+                    original_value = cell.value
+                    
+                    # Case 2a: String that can be parsed as pure number - clear it
                     try:
                         float(cell.value.replace(",", "."))
                         cell.value = None
@@ -921,39 +929,43 @@ def clear_donuk_values(path: str) -> int:
                     except:
                         pass
                     
-                    # Case 3: Text containing product name with quantity
-                    # Pattern: "KÜNEFE = 5", "KÜNEFE  5", "ŞERBET = 10", "CITIR MANTI  3"
-                    # We want to keep only the product name part
-                    if "=" in cell.value or re.search(r'\s+\d+', cell.value):
-                        # Check if it contains known product keywords
+                    # Case 2b: Pure qty/unit cells like "2 KL.", "5 SPT.", "10 TEPSI"
+                    # These should be cleared entirely
+                    if re.match(r'^\s*\d+(?:[\.,]\d+)?\s*(?:SPT\.|KL\.|TEPSI|TEPSİ)\s*$', cell.value, re.IGNORECASE):
+                        cell.value = None
+                        cleared += 1
+                        continue
+                    
+                    # Case 2c: Text containing qty/unit patterns
+                    # Check if contains quantity markers
+                    has_qty_unit = re.search(r'\d+\s*(?:SPT\.|KL\.|TEPSI|TEPSİ)', cell.value, re.IGNORECASE)
+                    has_trailing_number = re.search(r'\s+\d+\s*$', cell.value)
+                    
+                    if has_qty_unit or has_trailing_number:
                         val_up = TextNormalizer.up(cell.value)
                         
-                        # All DONUK products that need quantity cleanup
-                        donuk_products = [
-                            "KUNEFE", "SERBET", "TRILECE", "ROKOKO", "EKLER", "MEYVELI",
-                            # Çıtır Mantı ve sonrası ürünler
-                            "CITIR MANTI", "ÇITIR MANTI", "MANTI",
-                            "BOYOZ", "PATATES", 
-                            "HAMBURGER", "KOFTE", "KÖFTE",
-                            "TAVUK", "BUT",
-                            "BAKLAVA", "SOGUK", "CEVIZ", "TAHIN",
-                            "DANA", "ASADO",
-                            "BONFILE", "MADALYON",
-                            "SPAGETTI", "MAKARON",
-                            "USTANIN KOFTESI", "KADAYIF", "SNITSEL", "ŞINITSEL",
-                            # Makaron varyantları
-                            "CIKOLATALI", "ÇIKOLATALI", "HINDCEVIZLI", "HIND.CEVIZLI", "HIND CEV",
-                            "KARAMEL", "FRAMBUAZ", "ANTEPL", "ANTEPLI", "MERSIL", "YBNMERSIL"
-                        ]
-                        
-                        if any(prod in val_up for prod in donuk_products):
-                            # Extract product name (text before = or trailing numbers)
-                            match = re.match(r'^([^=]+?)(?:\s*=\s*\d+|\s+\d+\s*$)', cell.value)
-                            if match:
-                                product_name = match.group(1).strip()
-                                if product_name and product_name != cell.value:
-                                    cell.value = product_name
-                                    cleared += 1
+                        # Special case: ROKOKO and EKLER with "=" should preserve the "="
+                        # Pattern: "ROKOKO = 5" → "ROKOKO =", "EKLER = 10" → "EKLER ="
+                        if ("ROKOKO" in val_up or "EKLER" in val_up) and "=" in cell.value:
+                            # Keep product name and "=", remove only the number after "="
+                            cleaned = re.sub(r'(=)\s*\d+(?:[\.,]\d+)?\s*(?:SPT\.|KL\.|TEPSI|TEPSİ)?', r'\1', cell.value, flags=re.IGNORECASE).strip()
+                            if cleaned != original_value:
+                                cell.value = cleaned
+                                cleared += 1
+                        else:
+                            # General case: Remove trailing qty/unit patterns
+                            # Pattern: "KÜNEFE    2 SPT." → "KÜNEFE"
+                            cleaned = re.sub(r'(\s*[0-9]+(?:[\.,][0-9]+)?\s*(?:SPT\.|KL\.|TEPSI|TEPSİ))+$', '', cell.value, flags=re.IGNORECASE).strip()
+                            # Also remove bare trailing numbers: "KÜNEFE  5" → "KÜNEFE"
+                            cleaned = re.sub(r'\s+\d+\s*$', '', cleaned).strip()
+                            
+                            if cleaned != original_value:
+                                # If cleaned result is empty or just whitespace, clear the cell
+                                if not cleaned:
+                                    cell.value = None
+                                else:
+                                    cell.value = cleaned
+                                cleared += 1
     
     wb.save(path)
     return cleared

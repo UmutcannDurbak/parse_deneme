@@ -185,25 +185,12 @@ def locate_donuk_products_block(ws: openpyxl.worksheet.worksheet.Worksheet, min_
         Dict mapping normalized variant text -> (row_index, column_index, original_text)
     """
     res: Dict[str, Tuple[int, int, str]] = {}
-    branch_norm = normalize_text(branch_name) if branch_name else ""
     
-    # First find branch columns by looking for branch name in first few rows
-    branch_cols = []
-    for r in range(1, min(4, ws.max_row + 1)):
-        for c in range(1, ws.max_column + 1):
-            val = ws.cell(row=r, column=c).value
-            if not isinstance(val, str):
-                continue
-            upv = normalize_text(val)
-            if branch_norm and branch_norm in upv:
-                branch_cols.append(c)
-                if debug:
-                    print(f"[DEBUG] Found branch '{branch_name}' at r={r} c={c}")
-    
-    if not branch_cols:
-        if debug:
-            print(f"[DEBUG] No columns found for branch '{branch_name}'")
-        return res
+    # Use the provided branch span (min_c to max_c) as branch columns
+    # These are already determined by find_branch_span earlier
+    if debug:
+        print(f"[DEBUG] Using branch span cols {min_c}-{max_c} for '{branch_name}'")
+        print(f"[DEBUG] Worksheet: '{ws.title}', max_row={ws.max_row}, max_column={ws.max_column}")
 
     # Sections to skip/ignore (keep these to avoid section confusion)
     skip_sections = {
@@ -249,21 +236,16 @@ def locate_donuk_products_block(ws: openpyxl.worksheet.worksheet.Worksheet, min_
         if debug:
             print(f"[DEBUG] No DONUK header found, defaulting to row {donuk_header_row}")
     
-    # Determine column range to scan - use branch span (min_c to max_c) to catch all products
-    # This ensures we find products in adjacent columns (e.g., MANTI at c=12 when BOYOZ is at c=10)
-    scan_min_c = min(branch_cols) if branch_cols else min_c
-    scan_max_c = max(branch_cols) + 6 if branch_cols else max_c  # Scan a few columns beyond branch
-    
     # ONLY scan rows BELOW the DONUK header (and within reasonable range)
     scan_start_row = donuk_header_row + 1
     scan_end_row = min(ws.max_row + 1, donuk_header_row + 50)  # Scan next 50 rows max
     
     if debug:
-        print(f"[DEBUG] Scanning for DONUK products in rows {scan_start_row}-{scan_end_row}, cols {scan_min_c}-{scan_max_c}")
+        print(f"[DEBUG] Scanning for DONUK products in rows {scan_start_row}-{scan_end_row}, cols {min_c}-{max_c}")
     
-    # Look for products in branch span (not just branch columns), but ONLY below DONUK header
+    # Look for products ONLY in branch columns (min_c to max_c)
     for r in range(scan_start_row, scan_end_row):
-        for c in range(scan_min_c, min(scan_max_c + 1, ws.max_column + 1)):
+        for c in range(min_c, max_c + 1):
             try:
                 # Safe cell value access - handle merged cells
                 cell = ws.cell(row=r, column=c)
@@ -333,7 +315,7 @@ def locate_donuk_products_block(ws: openpyxl.worksheet.worksheet.Worksheet, min_
                     else:
                         cell = ws.cell(row=r, column=c)
                     
-                    # Store with clean name (without quantity)
+                    # Store original text as-is (cleaning will happen during write)
                     res[target] = (r, c, orig_text)
                     
                     if debug:
@@ -356,6 +338,10 @@ def safe_write(ws: openpyxl.worksheet.worksheet.Worksheet, r: int, c: int, value
 
     If the target is inside a merged range, write into the master cell.
     Does NOT unmerge cells to avoid corrupting the template structure.
+    
+    CRITICAL: Before writing, reads existing cell value and cleans any previously
+    appended qty/unit using clean_text_from_quantities. This ensures we don't
+    accumulate duplicates like "1 SPT. 1 SPT." on repeated writes.
     """
     # First attempt: direct write to the target cell
     cell = ws.cell(row=r, column=c)
@@ -487,39 +473,59 @@ def format_text_with_qty(text: str, qty) -> str:
     """Return text with quantity appended or replaced consistently as 'LEFT = qty'.
 
     - If the original text contains '=', replace the RHS with the qty.
-    - Otherwise, remove any trailing numeric tokens (previous appended quantities) and append ' = qty'.
+    - Otherwise, remove any trailing numeric tokens and units (previous appended quantities) and append ' = qty'.
+    
+    CRITICAL: This function MUST clean the input text to prevent accumulation.
     """
     try:
         fmt_qty = int(qty) if float(qty).is_integer() else qty
     except Exception:
         fmt_qty = qty
     t = str(text or "").strip()
-    if "=" in t:
-        left = t.partition("=")[0].strip()
+    # Always clean existing qty/unit first
+    t_clean = clean_text_from_quantities(t)
+    if "=" in t_clean:
+        left = t_clean.partition("=")[0].strip()
     else:
-        # remove trailing groups of numbers, commas, dots and spaces
-        left = re.sub(r"(\s+[0-9\.,]+)+\s*$", "", t).strip()
+        left = t_clean
     if left == "":
         return f"= {fmt_qty}"
     return f"{left} = {fmt_qty}"
+
+
+def clean_text_from_quantities(text: str) -> str:
+
+    """Sadece sonuna eklenmiş miktar birimlerini (ör. '4 SPT.', '2 KL.', '5 TEPSI', '3 KL.') siler.
+    Parantezli (+4) ve '=' gibi assignment marker'lar korunur."""
+    t = str(text or "")
+    if not t:
+        return ""
+    t = t.rstrip()
+
+    # Sadece sonuna eklenmiş miktar birimi kalıplarını sil
+    # Örnek: 'ÜRÜN ADI 4 SPT.' -> 'ÜRÜN ADI'
+    qty_unit_pattern = re.compile(r"(\s*[0-9]+(?:[\.,][0-9]+)?\s*(?:SPT\.|KL\.|TEPSI|TEPSİ))+$", re.IGNORECASE)
+    t = qty_unit_pattern.sub("", t).rstrip()
+
+    return t.strip()
 
 
 def append_text_with_space(text: str, qty, sep: str = "    ") -> str:
     """Append qty to original text using a separator (default: 4 spaces).
 
     Behavior:
-    - Remove any previously appended numeric tokens at the end of the string.
+    - Remove any previously appended numeric tokens and units (KL., SPT., TEPSİ) at the end.
     - Return "LEFT<sep>qty" where LEFT is the cleaned original text.
+    
+    CRITICAL: This function MUST clean the input text before appending to prevent
+    accumulation like "PRODUCT 1 SPT. 1 SPT." on repeated writes.
     """
     try:
         fmt_qty = int(qty) if float(qty).is_integer() else qty
     except Exception:
         fmt_qty = qty
-    t = str(text or "").strip()
-    # Remove trailing forms like '= 1' or ': 1' or '- 1' and any leftover numeric groups
-    t = re.sub(r"\s*[=:\-]\s*[0-9\.,\s]*$", "", t).strip()
-    # Remove trailing groups that look like previously appended quantities (numbers, commas/dots, spaces)
-    left = re.sub(r"(\s+[0-9\.,]+)+\s*$", "", t).strip()
+    # Always clean existing qty/unit from text before appending new value
+    left = clean_text_from_quantities(str(text or ""))
     if left == "":
         return f"{sep}{fmt_qty}"
     return f"{left}{sep}{fmt_qty}"
@@ -740,7 +746,7 @@ def locate_makaron_block(ws: openpyxl.worksheet.worksheet.Worksheet, min_c: int,
             if not cell.value:
                 continue
             
-            # Keep original text for format: "variant = qty"
+            # Keep original text for format: "variant = qty" - clean any existing qty/unit
             orig_text = str(cell.value).strip()
             if not orig_text:
                 continue
@@ -749,10 +755,13 @@ def locate_makaron_block(ws: openpyxl.worksheet.worksheet.Worksheet, min_c: int,
             if not up:
                 continue
             
-            # Store row, column, and original text
-            res[up] = (r, c, orig_text)
+            # Clean the original text from any accumulated quantities
+            clean_orig_text = clean_text_from_quantities(orig_text)
+            
+            # Store row, column, and cleaned original text
+            res[up] = (r, c, clean_orig_text)
             if debug:
-                print(f"[DEBUG] MAKARON variant '{up}' at row={r} col={c} text='{orig_text}'")
+                print(f"[DEBUG] MAKARON variant '{up}' at row={r} col={c} text='{orig_text}' cleaned='{clean_orig_text}'")
     
 
     if debug:
@@ -2187,6 +2196,13 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
             val = cell.value
             if isinstance(val, (int, float)):
                 cell.value = None
+            # Clean text values that contain qty/unit patterns
+            elif isinstance(val, str) and re.search(r"\d+\s*(?:SPT\.|KL\.|TEPSI|TEPSİ)", val, re.IGNORECASE):
+                cleaned = clean_text_from_quantities(val)
+                if cleaned:
+                    cell.value = cleaned
+                else:
+                    cell.value = None
             else:
                 try:
                     fv = float(str(val).replace(",", ".")) if (val not in (None, "") and str(val).strip() != "") else None
@@ -2245,14 +2261,23 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
         touched: Dict[int, set] = {}
         for (rr, cc) in matrix_aggreg.keys():
             touched.setdefault(rr, set()).add(cc)
-        # clear
+        # clear - also clean text values with qty/unit patterns
         for rr, cols in touched.items():
             for cc in sorted(cols):
                 try:
                     cell = ws.cell(row=rr, column=cc)
                     val = cell.value
+                    # Clear numeric values
                     if isinstance(val, (int, float)) or (isinstance(val, str) and val.strip() and re.match(r"^[0-9,\.]+$", val.strip())):
                         cell.value = None
+                    # Clean text values that contain qty/unit patterns (e.g., "2 KL.", "4 SPT.")
+                    elif isinstance(val, str) and re.search(r"\d+\s*(?:SPT\.|KL\.|TEPSI|TEPSİ)", val, re.IGNORECASE):
+                        # Clean the text but keep the product name part
+                        cleaned = clean_text_from_quantities(val)
+                        if cleaned:
+                            cell.value = cleaned
+                        else:
+                            cell.value = None
                 except Exception:
                     pass
         # write (as text with unit KOLI for TOST/EKMEK/CHEESECAKE/ÇATAL BÖREK)
@@ -2280,82 +2305,51 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
     # Update KÜNEFE/ŞERBET/DONUK KAR. TRİLEÇE using MEYVELI ROKOKO text update logic
     # These should update the text in the cell, not write to separate numeric cells
 
-    if kunefe_total_sum and ws is not None:
+    if kunefe_total_sum and ws is not None and min_c and max_c:
         fmt_qty = int(kunefe_total_sum) if float(kunefe_total_sum).is_integer() else kunefe_total_sum
         
-        # Find branch columns first
-        branch_cols = []
-        for r in range(1, min(4, ws.max_row + 1)):
-            for c in range(1, ws.max_column + 1):
+        # Search for KÜNEFE only in branch span columns (min_c to max_c)
+        for r in range(1, ws.max_row + 1):
+            for c in range(min_c, max_c + 1):
                 val = ws.cell(row=r, column=c).value
                 if not isinstance(val, str):
                     continue
                 upv = normalize_text(val)
-                if branch_name in upv:
-                    branch_cols.append(c)
-                    if debug:
-                        print(f"[DEBUG] KUNEFE - Found branch '{branch_name}' at r={r} c={c}")
-        
-        # Search for KÜNEFE only in branch columns
-        if branch_cols:
-            for r in range(1, ws.max_row + 1):
-                for c in branch_cols:
-                    val = ws.cell(row=r, column=c).value
-                    if not isinstance(val, str):
-                        continue
-                    upv = normalize_text(val)
-                    if "KUNEFE" in upv or "KÜNEFE" in upv:
-                        # Preserve left side; append qty with unit (SPT. or KL.) separated by spaces (no '=')
-                        text = val
-                        unit_text = "KL." if force_koli_all else "SPT."
-                        new_text = append_text_with_space(text, f"{fmt_qty} {unit_text}")
+                if "KUNEFE" in upv or "KÜNEFE" in upv:
+                    # CRITICAL: Clean existing cell value to remove old qty/unit before appending new value
+                    text_clean = clean_text_from_quantities(val)
+                    unit_text = "KL." if force_koli_all else "SPT."
+                    new_text = append_text_with_space(text_clean, f"{fmt_qty} {unit_text}")
+                    try:
+                        safe_write(ws, r, c, new_text)
+                    except Exception:
                         try:
-                            safe_write(ws, r, c, new_text)
+                            ws.cell(row=r, column=c).value = new_text
                         except Exception:
-                            try:
-                                ws.cell(row=r, column=c).value = new_text
-                            except Exception:
-                                pass
-                        if debug:
-                            print(f"[DEBUG] KUNEFE TEXT WRITE r={r} c={c} val='{new_text}' (branch column)")
-                        # Update only the first match
-                        break
-                else:
-                    continue
-                break
-        else:
-            if debug:
-                print(f"[DEBUG] KUNEFE - No branch columns found for '{branch_name}'")
+                            pass
+                    if debug:
+                        print(f"[DEBUG] KUNEFE TEXT WRITE r={r} c={c} val='{new_text}' (branch column)")
+                    # Update only the first match
+                    break
+            else:
+                continue
+            break
 
-    if trilece_total_sum and ws is not None:
+    if trilece_total_sum and ws is not None and min_c and max_c:
         fmt_qty = int(trilece_total_sum) if float(trilece_total_sum).is_integer() else trilece_total_sum
         
-        # Find branch columns first
-        branch_cols = []
-        for r in range(1, min(4, ws.max_row + 1)):
-            for c in range(1, ws.max_column + 1):
-                val = ws.cell(row=r, column=c).value
-                if not isinstance(val, str):
-                    continue
-                upv = normalize_text(val)
-                if branch_name in upv:
-                    branch_cols.append(c)
-                    if debug:
-                        print(f"[DEBUG] TRİLEÇE - Found branch '{branch_name}' at r={r} c={c}")
-        
-        # Search for DONUK KAR. TRİLEÇE only in branch columns
-        if branch_cols:
-            for r in range(1, ws.max_row + 1):
-                for c in branch_cols:
+        # Search for DONUK KAR. TRİLEÇE only in branch span columns (min_c to max_c)
+        for r in range(1, ws.max_row + 1):
+            for c in range(min_c, max_c + 1):
                     val = ws.cell(row=r, column=c).value
                     if not isinstance(val, str):
                         continue
                     upv = normalize_text(val)
                     if "DONUK" in upv and ("TRILECE" in upv or "TRİLEÇE" in upv):
-                        # Preserve left side; append qty separated by spaces (do NOT use '=')
-                        text = val
+                        # CRITICAL: Clean existing cell value to remove old qty/unit before appending new value
+                        text_clean = clean_text_from_quantities(val)
                         unit_text = "KL." if force_koli_all else "SPT."
-                        new_text = append_text_with_space(text, f"{fmt_qty} {unit_text}")
+                        new_text = append_text_with_space(text_clean, f"{fmt_qty} {unit_text}")
                         try:
                             safe_write(ws, r, c, new_text)
                         except Exception:
@@ -2367,43 +2361,26 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
                             print(f"[DEBUG] TRİLEÇE TEXT WRITE r={r} c={c} val='{new_text}' (branch column)")
                         # Update only the first match
                         break
-                else:
-                    continue
-                break
-        else:
-            if debug:
-                print(f"[DEBUG] TRİLEÇE - No branch columns found for '{branch_name}'")
+            else:
+                continue
+            break
 
     # ŞERBET should mirror KÜNEFE quantity using text update logic
-    if kunefe_total_sum and ws is not None:
+    if kunefe_total_sum and ws is not None and min_c and max_c:
         fmt_qty = int(kunefe_total_sum) if float(kunefe_total_sum).is_integer() else kunefe_total_sum
         
-        # Find branch columns first
-        branch_cols = []
-        for r in range(1, min(4, ws.max_row + 1)):
-            for c in range(1, ws.max_column + 1):
-                val = ws.cell(row=r, column=c).value
-                if not isinstance(val, str):
-                    continue
-                upv = normalize_text(val)
-                if branch_name in upv:
-                    branch_cols.append(c)
-                    if debug:
-                        print(f"[DEBUG] ŞERBET - Found branch '{branch_name}' at r={r} c={c}")
-        
-        # Search for ŞERBET only in branch columns
-        if branch_cols:
-            for r in range(1, ws.max_row + 1):
-                for c in branch_cols:
+        # Search for ŞERBET only in branch span columns (min_c to max_c)
+        for r in range(1, ws.max_row + 1):
+            for c in range(min_c, max_c + 1):
                     val = ws.cell(row=r, column=c).value
                     if not isinstance(val, str):
                         continue
                     upv = normalize_text(val)
                     if "SERBET" in upv or "ŞERBET" in upv:
-                        # Preserve left side; append qty with unit (SPT. or KL.) separated by spaces (no '=')
-                        text = val
+                        # CRITICAL: Clean existing cell value to remove old qty/unit before appending new value
+                        text_clean = clean_text_from_quantities(val)
                         unit_text = "KL." if force_koli_all else "SPT."
-                        new_text = append_text_with_space(text, f"{fmt_qty} {unit_text}")
+                        new_text = append_text_with_space(text_clean, f"{fmt_qty} {unit_text}")
                         try:
                             safe_write(ws, r, c, new_text)
                         except Exception:
@@ -2415,43 +2392,26 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
                             print(f"[DEBUG] ŞERBET TEXT WRITE r={r} c={c} val='{new_text}' (branch column)")
                         # Update only the first match
                         break
-                else:
-                    continue
-                break
-        else:
-            if debug:
-                print(f"[DEBUG] ŞERBET - No branch columns found for '{branch_name}'")    
+            else:
+                continue
+            break    
 
     # Update MEYVELI ROKOKO text cell if present and total > 0
-    if rokoko_total and ws is not None:
+    if rokoko_total and ws is not None and min_c and max_c:
         fmt_qty = int(rokoko_total) if float(rokoko_total).is_integer() else rokoko_total
-
-
-        branch_cols = []
-        for r in range(1, min(4, ws.max_row + 1)):
-            for c in range(1, ws.max_column + 1):
-                val = ws.cell(row=r, column=c).value
-                if not isinstance(val, str):
-                    continue
-                upv = normalize_text(val)
-                if branch_name in upv:
-                    branch_cols.append(c)
-                    if debug:
-                        print(f"[DEBUG] MEYVELI ROKOKO - Found branch '{branch_name}' at r={r} c={c}")
         
-        # Search for ŞERBET only in branch columns
-        if branch_cols:
-            for r in range(1, ws.max_row + 1):
-                for c in branch_cols:
+        # Search for ROKOKO only in branch span columns (min_c to max_c)
+        for r in range(1, ws.max_row + 1):
+            for c in range(min_c, max_c + 1):
                     val = ws.cell(row=r, column=c).value
                     if not isinstance(val, str):
                         continue
                     upv = normalize_text(val)
                     if "ROKOKO" in upv:
-                        # Preserve left side; consistently format as 'LEFT = qty'
-                        text = val
+                        # CRITICAL: Clean existing cell value to remove old qty/unit before formatting
+                        text_clean = clean_text_from_quantities(val)
                         unit_text = "KL." if force_koli_all else "SPT."
-                        new_text = format_text_with_qty(text, f"{fmt_qty} {unit_text}")
+                        new_text = format_text_with_qty(text_clean, f"{fmt_qty} {unit_text}")
                         try:
                             safe_write(ws, r, c, new_text)
                         except Exception:
@@ -2463,42 +2423,25 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
                             print(f"[DEBUG] MEYVELI ROKOKO TEXT WRITE r={r} c={c} val='{new_text}' (branch column)")
                         # Update only the first match
                         break
-                else:
-                    continue
-                break
-        else:
-            if debug:
-                print(f"[DEBUG] MEYVELI ROKOKO - No branch columns found for '{branch_name}'")
+            else:
+                continue
+            break
 
-    if ekler_total_sum and ws is not None:
+    if ekler_total_sum and ws is not None and min_c and max_c:
         fmt_qty = int(ekler_total_sum) if float(ekler_total_sum).is_integer() else ekler_total_sum
         
-        # Find branch columns first
-        branch_cols = []
-        for r in range(1, min(4, ws.max_row + 1)):
-            for c in range(1, ws.max_column + 1):
-                val = ws.cell(row=r, column=c).value
-                if not isinstance(val, str):
-                    continue
-                upv = normalize_text(val)
-                if branch_name in upv:
-                    branch_cols.append(c)
-                    if debug:
-                        print(f"[DEBUG] EKLER - Found branch '{branch_name}' at r={r} c={c}")
-        
-        # Search for EKLER only in branch columns
-        if branch_cols:
-            for r in range(1, ws.max_row + 1):
-                for c in branch_cols:
+        # Search for EKLER only in branch span columns (min_c to max_c)
+        for r in range(1, ws.max_row + 1):
+            for c in range(min_c, max_c + 1):
                     val = ws.cell(row=r, column=c).value
                     if not isinstance(val, str):
                         continue
                     upv = normalize_text(val)
                     if "EKLER" in upv:
-                        # Preserve left side; consistently format as 'LEFT = qty'
-                        text = val
+                        # CRITICAL: Clean existing cell value to remove old qty/unit before formatting
+                        text_clean = clean_text_from_quantities(val)
                         unit_text = "KL." if force_koli_all else "SPT."
-                        new_text = format_text_with_qty(text, f"{fmt_qty} {unit_text}")
+                        new_text = format_text_with_qty(text_clean, f"{fmt_qty} {unit_text}")
                         try:
                             safe_write(ws, r, c, new_text)
                         except Exception:
@@ -2510,12 +2453,9 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
                             print(f"[DEBUG] EKLER TEXT WRITE r={r} c={c} val='{new_text}' (branch column)")
                         # Update only the first match
                         break
-                else:
-                    continue
-                break
-        else:
-            if debug:
-                print(f"[DEBUG] EKLER - No branch columns found for '{branch_name}'")
+            else:
+                continue
+            break
 
     wb.save(output_path)
     # If forced hits were collected, print a concise report for the trial
