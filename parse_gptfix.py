@@ -117,11 +117,15 @@ def read_branch_from_file(csv_path: str) -> tuple[Optional[str], Optional[str]]:
     - primary: Inner part from "OUTER(INNER)" format - should be tried first
     - fallback: Outer part - use if primary doesn't match
     
+    Special handling for MARMARIS:
+    - If "MARMARIS" detected in branch code, checks "Sipariş Notu" column
+    - Looks for "İÇMELER", "DATÇA", or "MARMARİS" keywords in order note
+    - Returns specific sub-branch name based on order note content
+    
     Example:
     - "AYDIN(KUSADASI)" -> returns ("KUSADASI", "AYDIN")
-    - "MANISA(MEYDAN)" -> returns ("MEYDAN", "MANISA")
-    
-    The fuzzy matcher will try primary first, then fallback if no match found.
+    - "MUGLA(MARMARIS)" + "Sipariş Notu: içmeler şb..." -> returns ("İÇMELER", "MARMARIS")
+    - "MUGLA(MARMARIS)" + "Sipariş Notu: datça şb..." -> returns ("DATÇA", "MARMARIS")
     
     Args:
         csv_path: Path to CSV file
@@ -129,9 +133,15 @@ def read_branch_from_file(csv_path: str) -> tuple[Optional[str], Optional[str]]:
     Returns:
         Tuple of (primary_branch, fallback_branch)
     """
+    branch_code = None
+    order_note = None
+    
     try:
         with open(csv_path, encoding="utf-8") as f:
-            for line in f:
+            lines = f.readlines()
+            
+            # First pass: Extract branch code
+            for line in lines:
                 up = normalize_text(line)
                 if "SUBE" in up and ("KODU" in up or "ADI" in up):
                     # Extract part after colon
@@ -143,20 +153,51 @@ def read_branch_from_file(csv_path: str) -> tuple[Optional[str], Optional[str]]:
                     if "-" in part:
                         part = part.split("-", 1)[-1]
                     part = part.strip()
+                    branch_code = part
+                    break
+            
+            # Second pass: Check for order note (Sipariş Notu)
+            for line in lines:
+                up = normalize_text(line)
+                if "SIPARIS" in up and "NOTU" in up:
+                    # Extract part after colon
+                    note_part = line.split(":", 1)[-1] if ":" in line else ""
+                    order_note = note_part.strip()
+                    break
+            
+            # Process branch code
+            if branch_code:
+                # Check if this is a MARMARIS branch
+                up_branch = normalize_text(branch_code)
+                is_marmaris = "MARMARIS" in up_branch or "MUGLA" in up_branch
+                
+                if is_marmaris and order_note:
+                    # Check order note for sub-branch indicators
+                    up_note = normalize_text(order_note)
                     
-                    # If parens exist, return (inner, outer) for priority matching
-                    m = re.search(r"^([^(]+)\(([^)]+)\)$", part)
-                    if m:
-                        outer = m.group(1).strip()
-                        inner = m.group(2).strip()
-                        # PRIMARY: inner (parantez içi) - try this first
-                        # FALLBACK: outer (parantez dışı) - try if primary fails
-                        return (inner, outer)
-                    
-                    # No parens - return single value for both
-                    if part.upper().endswith(" DEPO"):
-                        part = part[:-5].strip()
-                    return (part, None)
+                    if "ICMELER" in up_note:
+                        return ("İÇMELER", "MARMARIS")
+                    elif "DATCA" in up_note:
+                        return ("DATÇA", "MARMARIS")
+                    elif "MARMARIS" in up_note:
+                        # If note explicitly mentions MARMARIS, use it as primary
+                        return ("MARMARİS", "MARMARIS")
+                
+                # Standard processing for non-Marmaris or when no order note match
+                # If parens exist, return (inner, outer) for priority matching
+                m = re.search(r"^([^(]+)\(([^)]+)\)$", branch_code)
+                if m:
+                    outer = m.group(1).strip()
+                    inner = m.group(2).strip()
+                    # PRIMARY: inner (parantez içi) - try this first
+                    # FALLBACK: outer (parantez dışı) - try if primary fails
+                    return (inner, outer)
+                
+                # No parens - return single value for both
+                if branch_code.upper().endswith(" DEPO"):
+                    branch_code = branch_code[:-5].strip()
+                return (branch_code, None)
+                
     except Exception:
         pass
     return (None, None)
@@ -495,16 +536,16 @@ def format_text_with_qty(text: str, qty) -> str:
 
 def clean_text_from_quantities(text: str) -> str:
 
-    """Sadece sonuna eklenmiş miktar birimlerini (ör. '4 SPT.', '2 KL.', '5 TEPSI', '3 KL.') siler.
+    """Sadece sonuna eklenmiş miktar birimlerini (ör. '4 SPT.', '2 KL.', '5 TEPSI', '3 KOLİ') siler.
     Parantezli (+4) ve '=' gibi assignment marker'lar korunur."""
     t = str(text or "")
     if not t:
         return ""
     t = t.rstrip()
 
-    # Sadece sonuna eklenmiş miktar birimi kalıplarını sil
-    # Örnek: 'ÜRÜN ADI 4 SPT.' -> 'ÜRÜN ADI'
-    qty_unit_pattern = re.compile(r"(\s*[0-9]+(?:[\.,][0-9]+)?\s*(?:SPT\.|KL\.|TEPSI|TEPSİ))+$", re.IGNORECASE)
+    # Sadece sonuna eklenmiş miktar birimi kalıplarını sil (KOLİ/KOLI dahil)
+    # Örnek: 'ÜRÜN ADI 4 SPT.' -> 'ÜRÜN ADI', 'DOSİDO 5 KOLİ' -> 'DOSİDO'
+    qty_unit_pattern = re.compile(r"(\s*[0-9]+(?:[\.,][0-9]+)?\s*(?:SPT\.|KL\.|TEPSI|TEPSİ|KOLİ|KOLI))+$", re.IGNORECASE)
     t = qty_unit_pattern.sub("", t).rstrip()
 
     return t.strip()
@@ -2196,8 +2237,8 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
             val = cell.value
             if isinstance(val, (int, float)):
                 cell.value = None
-            # Clean text values that contain qty/unit patterns
-            elif isinstance(val, str) and re.search(r"\d+\s*(?:SPT\.|KL\.|TEPSI|TEPSİ)", val, re.IGNORECASE):
+            # Clean text values that contain qty/unit patterns (including KOLI for DOSIDO)
+            elif isinstance(val, str) and re.search(r"\d+\s*(?:SPT\.|KL\.|TEPSI|TEPSİ|KOLİ|KOLI)", val, re.IGNORECASE):
                 cleaned = clean_text_from_quantities(val)
                 if cleaned:
                     cell.value = cleaned
@@ -2232,9 +2273,24 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
                 if debug:
                     print(f"[DEBUG] PASTA TEXT WRITE r={r_} c={cc} val='{out_text}'")
             else:
-                safe_write(ws, r_, cc, v)
-                if debug:
-                    print(f"[DEBUG] WRITE r={r_} c={cc} val={v}")
+                # Check if this is DOSIDO row - write with KOLI suffix
+                is_dosido_row = False
+                try:
+                    dosido_row = flavor_rows.get("DOSIDO") if 'flavor_rows' in locals() else None
+                    is_dosido_row = (dosido_row is not None and r_ == dosido_row)
+                except:
+                    pass
+                
+                if is_dosido_row:
+                    fmt_v = int(v) if float(v).is_integer() else v
+                    out_text = f"{fmt_v} KOLİ"
+                    safe_write(ws, r_, cc, out_text)
+                    if debug:
+                        print(f"[DEBUG] DOSIDO KOLI WRITE r={r_} c={cc} val='{out_text}'")
+                else:
+                    safe_write(ws, r_, cc, v)
+                    if debug:
+                        print(f"[DEBUG] WRITE r={r_} c={cc} val={v}")
         except Exception as e:
             if debug:
                 print(f"[DEBUG] WRITE ERROR r={r_} c={cc} val={'{:.2f}'.format(v) if isinstance(v,(int,float)) else v} error={e}")
@@ -2248,10 +2304,25 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
                     if debug:
                         print(f"[DEBUG] PASTA MASTER WRITE r={r_} c={cc} val='{out_text}'")
                 else:
-                    # Use safe_write to attempt writing into the master cell of the merge
-                    safe_write(ws, r_, cc, v)
-                    if debug:
-                        print(f"[DEBUG] MASTER WRITE r={r_} c={cc} val={v}")
+                    # Check if this is DOSIDO row - write with KOLI suffix
+                    is_dosido_row = False
+                    try:
+                        dosido_row = flavor_rows.get("DOSIDO") if 'flavor_rows' in locals() else None
+                        is_dosido_row = (dosido_row is not None and r_ == dosido_row)
+                    except:
+                        pass
+                    
+                    if is_dosido_row:
+                        fmt_v = int(v) if float(v).is_integer() else v
+                        out_text = f"{fmt_v} KOLİ"
+                        safe_write(ws, r_, cc, out_text)
+                        if debug:
+                            print(f"[DEBUG] DOSIDO KOLI MASTER WRITE r={r_} c={cc} val='{out_text}'")
+                    else:
+                        # Use safe_write to attempt writing into the master cell of the merge
+                        safe_write(ws, r_, cc, v)
+                        if debug:
+                            print(f"[DEBUG] MASTER WRITE r={r_} c={cc} val={v}")
             except Exception as e2:
                 if debug:
                     print(f"[DEBUG] MASTER WRITE ERROR r={r_} c={cc} val={v} error={e2}")
@@ -2770,6 +2841,13 @@ def process_csv(csv_path: str, output_path: str = "sevkiyat_tatlı.xlsx", sheet_
                         except:
                             fmt_qty = csv_miktar
                         ws.cell(row=rr, column=cc).value = f"{fmt_qty} TEPSİ"
+                    # KAYMAK için "PKT." ekle
+                    elif excel_ad in ("KAYMAK", "KAYMAKTAVA"):
+                        try:
+                            fmt_qty = int(csv_miktar) if float(csv_miktar).is_integer() else csv_miktar
+                        except:
+                            fmt_qty = csv_miktar
+                        ws.cell(row=rr, column=cc).value = f"{fmt_qty} PKT."
                     else:
                         ws.cell(row=rr, column=cc).value = csv_miktar
                     matched += 1
@@ -2797,6 +2875,13 @@ def process_csv(csv_path: str, output_path: str = "sevkiyat_tatlı.xlsx", sheet_
                                 except:
                                     fmt_qty = csv_miktar
                                 ws.cell(row=rr, column=cc).value = f"{fmt_qty} TEPSİ"
+                            # KAYMAK için "PKT." ekle
+                            elif excel_ad in ("KAYMAK", "KAYMAKTAVA"):
+                                try:
+                                    fmt_qty = int(csv_miktar) if float(csv_miktar).is_integer() else csv_miktar
+                                except:
+                                    fmt_qty = csv_miktar
+                                ws.cell(row=rr, column=cc).value = f"{fmt_qty} PKT."
                             else:
                                 ws.cell(row=rr, column=cc).value = csv_miktar
                             matched += 1
@@ -2812,8 +2897,12 @@ def process_csv(csv_path: str, output_path: str = "sevkiyat_tatlı.xlsx", sheet_
                             matched += 1
                             yazildi = True
                             break
-                        if excel_ad == "KAYMAK" and tatli_eslesir(excel_ad, csv_name):
-                            ws.cell(row=rr, column=cc).value = csv_miktar
+                        if excel_ad in ("KAYMAK", "KAYMAKTAVA") and tatli_eslesir(excel_ad, csv_name):
+                            try:
+                                fmt_qty = int(csv_miktar) if float(csv_miktar).is_integer() else csv_miktar
+                            except:
+                                fmt_qty = csv_miktar
+                            ws.cell(row=rr, column=cc).value = f"{fmt_qty} PKT."
                             matched += 1
                             yazildi = True
                             break
