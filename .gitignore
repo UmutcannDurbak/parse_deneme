@@ -74,11 +74,14 @@ quick_*.py
 simple_*.py
 apply_*.py
 temp_*.py
+final_*.py
 
 # Icon and packaging helpers
 appicon.ico
 build.bat
 Thumbs.db*.pyc
 last_*.txt
+TODOS.txt
+parse_debug.txt
 
 Desktop.ini

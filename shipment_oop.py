@@ -50,6 +50,7 @@ BRANCH_NAME_MAPPING = {
     "FOLKARTVEGA": "FOLKART VEGA", # CSV: IZMIR(FOLKARTVEGA) → Excel: FOLKART VEGA
     "ELYSIUM": "ELAZIG",          # CSV: ELYSIUM → Excel: ELAZIG
     "MEYDAN AVM": "MEYDAN",       # CSV: MEYDAN AVM → Excel: MEYDAN
+    "SEYHAN": "ADANA",            # CSV: ADANA(SEYHAN) → Excel: ADANA
 }
 
 # Birden fazla sevkiyat günü olan şubeler ve hangi Excel sayfalarında bulundukları
@@ -698,12 +699,32 @@ class ShipmentCoordinator:
             s = re.sub(r"\s+", " ", s).strip()
             return s
 
-        # Convert to text lines like: "<NAME (…)> - <qty> ADET"
+        # Convert to text lines.
+        # LOJISTIK-1: Remove static "ADET" suffix for all lojistik products.
+        # LOJISTIK-2: Special case for "ACI BIBER RECELI" size-based unit mapping:
+        #   ACI BİBER REÇELİ(280 GR) -> "{qty} KAVANOZ"
+        #   ACI BİBER REÇELİ(5 KG)   -> "{qty} KOVA"
         lines: List[str] = []
         for r in rows:
-            name = clean_display(r.stok_kodu)
+            original = r.stok_kodu
+            name = clean_display(original)
             qty = int(r.miktar) if float(r.miktar).is_integer() else r.miktar
-            lines.append(f"{name} - {qty} ADET")
+
+            up_orig = TextNormalizer.up(original)
+            # Detect Acı Biber Reçeli variants BEFORE parentheses removal
+            unit_suffix = ""
+            if "ACI" in up_orig and "BIBER" in up_orig and "RECELI" in up_orig:
+                import re
+                m = re.search(r"\([^)]*\)", original)
+                parens_content = m.group(0)[1:-1] if m else ""
+                up_par = TextNormalizer.up(parens_content)
+                # Map size → unit text
+                if "280" in up_par:
+                    unit_suffix = " KAVANOZ"
+                elif ("5" in up_par and "KG" in up_par) or "5KG" in up_par:
+                    unit_suffix = " KOVA"
+            # Build line (no generic ADET suffix anymore)
+            lines.append(f"{name} - {qty}{unit_suffix}")
         
         # Use improved lojistik writer
         wr = ImprovedLojistikWriter(output_path, sheet_name=sheet_hint)

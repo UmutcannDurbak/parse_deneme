@@ -1529,7 +1529,17 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
                 "EKŞİ MAYALI TOST EKMEĞİ",
                 "ZERDEÇALLI TOST EKMEĞİ",
             ]}
-            unit_text = "KL." if (matched_token in force_always_kl_norm or force_koli_all) else "SPT."
+            # Force Tepsi for Baklava products (Cevizli Tahinli, Soğuk Baklava)
+            force_tepsi_norm = {normalize_text(x) for x in [
+                "CEVIZLI TAHINLI BAKLAVA",
+                "SOGUK BAKLAVA",
+            ]}
+            if matched_token in force_tepsi_norm:
+                unit_text = "Tepsi"
+            elif matched_token in force_always_kl_norm or force_koli_all:
+                unit_text = "KL."
+            else:
+                unit_text = "SPT."
             new_text = append_text_with_space(orig_text, f"{fmt_qty} {unit_text}")
             try:
                 safe_write(ws, row_idx, col_idx, new_text)
@@ -1850,13 +1860,17 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
             m = re.search(r"\(([^)]+)\)", name_raw)
 
             
-            # Normalize FISTIK spelling in parentheses
+            # Normalize FISTIK and YABANMERSINLI spellings in parentheses
             if m:
                 csv_variant = normalize_text(m.group(1))
                 
                 # Normalize FISTIK spelling (check for None first)
                 if csv_variant and ("FISTIK" in csv_variant or "FISTIKLI" in csv_variant):
                     csv_variant = csv_variant.replace("FISTIKLI", "ANTEPLI").replace("FISTIK", "ANTEP")
+                
+                # Normalize YABANMERSINLI → YBNMERSINLI to match Excel "YBN.MERSİNLİ"
+                if csv_variant and ("YABANMERSINLI" in csv_variant or "YABAN MERSINLI" in csv_variant):
+                    csv_variant = csv_variant.replace("YABANMERSINLI", "YBNMERSINLI").replace("YABAN MERSINLI", "YBNMERSINLI")
 
             # Try to find best matching variant
             best_match = None
@@ -1872,9 +1886,15 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
                     if csv_variant == excel_key:
                         best_match = excel_key
                         break
-                    # One contains the other (ignoring -LI suffix)
-                    csv_base = csv_variant.replace("LI", "").strip()
-                    excel_base = excel_key.replace("LI", "").strip()
+                    # Remove dots and compare (e.g., "YBN.MERSINLI" → "YBNMERSINLI")
+                    csv_clean = csv_variant.replace(".", "").strip()
+                    excel_clean = excel_key.replace(".", "").strip()
+                    if csv_clean == excel_clean:
+                        best_match = excel_key
+                        break
+                    # One contains the other (ignoring -LI suffix and dots)
+                    csv_base = csv_clean.replace("LI", "").strip()
+                    excel_base = excel_clean.replace("LI", "").strip()
                     if csv_base in excel_base or excel_base in csv_base:
                         if len(excel_base) > best_score:
                             best_match = excel_key
@@ -2067,6 +2087,7 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
     matrix_aggreg: Dict[Tuple[int, int], float] = {}
     kunefe_total_sum: float = 0.0
     trilece_total_sum: float = 0.0
+    trilece_csv_name: str = ""  # Track CSV source name for unit determination
     ekler_total_sum: float = 0.0
     for _, r in df.iterrows():
         name = str(r[stok_col])
@@ -2097,14 +2118,19 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
             continue  # ROKOKO is handled as a text cell, not in the DONDURMALAR grid
         # New explicit mapping path for TATLI/BOREK items
         if "KUNEFE" in up:
-            try:
-                qty_r = float(str(r[miktar_col]).replace(",", "."))
-            except Exception:
-                qty_r = 0.0
-            kunefe_total_sum += qty_r
-            matched += 1
-            if debug:
-                print(f"[DEBUG] KUNEFE +{qty_r} now {kunefe_total_sum}")
+            # Exclude packaging/support lines like "KUNEFE ICIN KAP KOLISI" (group SARF MALZEME or contains ICIN/KOLI)
+            if ("ICIN" in up or "KOLI" in up or g_up == "SARF MALZEME"):
+                if debug:
+                    print(f"[DEBUG] KUNEFE packaging row skipped: up='{up}' grp='{g_up}'")
+            else:
+                try:
+                    qty_r = float(str(r[miktar_col]).replace(",", "."))
+                except Exception:
+                    qty_r = 0.0
+                kunefe_total_sum += qty_r
+                matched += 1
+                if debug:
+                    print(f"[DEBUG] KUNEFE +{qty_r} now {kunefe_total_sum}")
             continue
         if "TRILECE" in up:
             try:
@@ -2112,9 +2138,12 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
             except Exception:
                 qty_r = 0.0
             trilece_total_sum += qty_r
+            # Capture CSV name for unit determination (KARAMELLI vs DONUK)
+            if not trilece_csv_name:
+                trilece_csv_name = up
             matched += 1
             if debug:
-                print(f"[DEBUG] TRILECE +{qty_r} now {trilece_total_sum}")
+                print(f"[DEBUG] TRILECE +{qty_r} now {trilece_total_sum} (csv_name={up})")
             continue
         
         if g_up in ("TATLI", "BOREK") and sub_cols:
@@ -2183,11 +2212,14 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
                             matched += 1
                             continue
 
-                # ÇATAL BÖREK
+                # ÇATAL BÖREK - PATATESLİ ÇATAL discontinued, never write to it
                 if row_catal:
-                    if "PATATES" in up:
-                        add(row_catal, [sub_cols[0]], qty)
-                        matched += 1
+                    # Skip Patatesli Çatal (discontinued) - only match if explicitly ÇATAL/BÖREK in name
+                    if "PATATES" in up and ("CATAL" in up or "BOREK" in up or "BORE" in up):
+                        # Patatesli Çatal discontinued - do NOT write
+                        if debug:
+                            print(f"[DEBUG] Skipping PATATESLİ ÇATAL (discontinued): '{name}'")
+                        matched += 1  # Count as matched to avoid unmatched warnings
                         continue
                     if "ISPANAK" in up and len(sub_cols) >= 2:
                         add(row_catal, [sub_cols[1]], qty)
@@ -2409,6 +2441,15 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
     if trilece_total_sum and ws is not None and min_c and max_c:
         fmt_qty = int(trilece_total_sum) if float(trilece_total_sum).is_integer() else trilece_total_sum
         
+        # Determine unit based on CSV source name: KARAMELLI→Tepsi, DONUK→SPT
+        if "KARAMELLI" in trilece_csv_name or "KARAMEL" in trilece_csv_name:
+            trilece_unit = "Tepsi"
+        elif "DONUK" in trilece_csv_name:
+            trilece_unit = "KL." if force_koli_all else "SPT."
+        else:
+            # Default to SPT if unclear
+            trilece_unit = "KL." if force_koli_all else "SPT."
+        
         # Search for DONUK KAR. TRİLEÇE only in branch span columns (min_c to max_c)
         for r in range(1, ws.max_row + 1):
             for c in range(min_c, max_c + 1):
@@ -2419,8 +2460,7 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
                     if "DONUK" in upv and ("TRILECE" in upv or "TRİLEÇE" in upv):
                         # CRITICAL: Clean existing cell value to remove old qty/unit before appending new value
                         text_clean = clean_text_from_quantities(val)
-                        unit_text = "KL." if force_koli_all else "SPT."
-                        new_text = append_text_with_space(text_clean, f"{fmt_qty} {unit_text}")
+                        new_text = append_text_with_space(text_clean, f"{fmt_qty} {trilece_unit}")
                         try:
                             safe_write(ws, r, c, new_text)
                         except Exception:
@@ -2429,7 +2469,7 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
                             except Exception:
                                 pass
                         if debug:
-                            print(f"[DEBUG] TRİLEÇE TEXT WRITE r={r} c={c} val='{new_text}' (branch column)")
+                            print(f"[DEBUG] TRİLEÇE TEXT WRITE r={r} c={c} val='{new_text}' unit={trilece_unit} (csv={trilece_csv_name})")
                         # Update only the first match
                         break
             else:
@@ -2560,6 +2600,9 @@ def process_csv(csv_path: str, output_path: str = "sevkiyat_tatlı.xlsx", sheet_
             return "ADET"
         if "TEPSI" in v or "TEPSİ" in v or re.search(r"\b42\b", v) or re.search(r"1X?42", v):
             return "TEPSI"
+        # CSV'den gelen "AD" birimini ADET olarak normalize et
+        if v == "AD":
+            return "ADET"
         if "BUYUK" in v:
             return "BUYUK"
         if "KASE" in v:
@@ -2576,6 +2619,12 @@ def process_csv(csv_path: str, output_path: str = "sevkiyat_tatlı.xlsx", sheet_
         s = str(s or "")
         s = unicodedata.normalize("NFKD", s).upper()
         s = s.replace("İ", "I").replace("Ş", "S").replace("Ğ", "G").replace("Ü", "U").replace("Ö", "O").replace("Ç", "C")
+        # Remove LOJISTIK* prefix (tolerant to minor corruption)
+        s = re.sub(r"^LOJIST[Iİ]K\*", "", s)
+        s = re.sub(r"^LOJ\S*\*", "", s)
+        # Repair possible SEKERPARE corruption (e.g. IEKERPARE)
+        if re.match(r"^I?EKERPARE", s):
+            s = re.sub(r"^I?EKERPARE", "SEKERPARE", s)
         s = re.sub(r"\{.*?\}", "", s)
         s = re.sub(r"[^\w\s\*\(\)]", "", s)
         s = re.sub(r"\s+", " ", s)
@@ -2633,11 +2682,13 @@ def process_csv(csv_path: str, output_path: str = "sevkiyat_tatlı.xlsx", sheet_
         if "TAVUKGOGSUKAZ" in ex_strict and "TAVUKGOGSUKAZANDIBI" in csv_strict:
             return True
         
-        # General substring matching - but exclude TAVUKGOGSU to prevent cross-matching
-        if (ex_strict in csv_strict or csv_strict in ex_strict) and ("KAZ" not in ex_strict and "KAZANDIBI" not in ex_strict):
-            # Additional safety: if Excel has TAVUKGOGSU, CSV must not have KAZANDIBI
-            if "TAVUKGOGSU" in ex_strict and ("KAZANDIBI" in csv_strict or "KAZ" in csv_strict):
-                return False
+        # General substring matching
+        if ex_strict in csv_strict or csv_strict in ex_strict:
+            # Special safety for TAVUKGOGSU: if Excel has plain TAVUKGOGSU (no KAZ),
+            # CSV must also not have KAZANDIBI
+            if "TAVUKGOGSU" in ex_strict and ("KAZANDIBI" not in ex_strict and "KAZ" not in ex_strict):
+                if "KAZANDIBI" in csv_strict or "KAZ" in csv_strict:
+                    return False
             return True
         return False
 
@@ -2808,7 +2859,18 @@ def process_csv(csv_path: str, output_path: str = "sevkiyat_tatlı.xlsx", sheet_
         stok_name = r[stok_col]
         ana_ad, varyant = split_tatli_and_variant(stok_name)
         ana_ad_norm = normalize_text(ana_ad)
-        varyant_norm = normalize_variant(varyant)
+        
+        # CRITICAL: Check "Birim" column for unit information (e.g., "AD" for ADET)
+        # If no variant found in product name, use unit from Birim column
+        if not varyant:
+            try:
+                birim_val = str(r.get("Birim", r.get("BIRIM", ""))).strip()
+                if birim_val:
+                    varyant = birim_val
+            except:
+                pass
+        
+        varyant_norm = normalize_variant(varyant, product_name=ana_ad_norm)
         try:
             mikt = float(str(r[miktar_col]).replace(",", "."))
         except Exception:
@@ -2849,7 +2911,16 @@ def process_csv(csv_path: str, output_path: str = "sevkiyat_tatlı.xlsx", sheet_
                             fmt_qty = csv_miktar
                         ws.cell(row=rr, column=cc).value = f"{fmt_qty} PKT."
                     else:
-                        ws.cell(row=rr, column=cc).value = csv_miktar
+                        # Add 'ad' suffix for first five ADET products
+                        first_five = {"KAZANDIBI", "ANTEP FISTIKLI KAZANDIBI", "TAVUK GOGSU", "TAVUK GOGSU KAZ", "SAKIZLI MUHALLEBI"}
+                        if excel_var == "ADET" and excel_ad in first_five:
+                            try:
+                                fmt_qty = int(csv_miktar) if float(csv_miktar).is_integer() else csv_miktar
+                            except:
+                                fmt_qty = csv_miktar
+                            ws.cell(row=rr, column=cc).value = f"{fmt_qty} ad"
+                        else:
+                            ws.cell(row=rr, column=cc).value = csv_miktar
                     matched += 1
                     yazildi = True
                     break
@@ -2868,8 +2939,8 @@ def process_csv(csv_path: str, output_path: str = "sevkiyat_tatlı.xlsx", sheet_
                 if tatli_eslesir(excel_ad, csv_name):
                     for csv_var, csv_miktar in entries:
                         if varyant_eslesir(excel_var, csv_var):
-                            # EKMEK KADAYIFI ve ŞEKERPARE için "TEPSİ" ekle
-                            if excel_ad in ("EKMEKKADAYIFI", "SEKERPARE"):
+                            # EKMEK KADAYIFI ve ŞEKERPARE için "TEPSİ" ekle (boşluksuz ve boşluklu varyantları destekle)
+                            if excel_ad in ("EKMEKKADAYIFI", "EKMEK KADAYIFI", "SEKERPARE"):
                                 try:
                                     fmt_qty = int(csv_miktar) if float(csv_miktar).is_integer() else csv_miktar
                                 except:
@@ -2883,7 +2954,15 @@ def process_csv(csv_path: str, output_path: str = "sevkiyat_tatlı.xlsx", sheet_
                                     fmt_qty = csv_miktar
                                 ws.cell(row=rr, column=cc).value = f"{fmt_qty} PKT."
                             else:
-                                ws.cell(row=rr, column=cc).value = csv_miktar
+                                first_five = {"KAZANDIBI", "ANTEP FISTIKLI KAZANDIBI", "TAVUK GOGSU", "TAVUK GOGSU KAZ", "SAKIZLI MUHALLEBI"}
+                                if excel_var == "ADET" and excel_ad in first_five:
+                                    try:
+                                        fmt_qty = int(csv_miktar) if float(csv_miktar).is_integer() else csv_miktar
+                                    except:
+                                        fmt_qty = csv_miktar
+                                    ws.cell(row=rr, column=cc).value = f"{fmt_qty} ad"
+                                else:
+                                    ws.cell(row=rr, column=cc).value = csv_miktar
                             matched += 1
                             yazildi = True
                             break
@@ -3111,14 +3190,21 @@ def process_all(csv_path: str,
                 lojistik_output: str = "sevkiyat_lojistik.xlsx",
                 debug: bool = False,
                 force_donuk: Optional[Iterable[str]] = None):
-    # process_donuk_csv now accepts an optional iterable of forced donuk candidate names
+    # Process TATLI
+    tatli_matched, tatli_unmatched = process_csv(csv_path, output_path=tatli_output)
+    
+    # Process DONUK - accepts an optional iterable of forced donuk candidate names
     result = process_donuk_csv(csv_path, output_path=donuk_output, debug=debug, force_donuk=force_donuk)
     # process_donuk_csv returns (matched, 0) by default; keep compatibility
     if isinstance(result, tuple) or isinstance(result, list):
-        matched = result[0]
+        donuk_matched = result[0]
     else:
-        matched = 0
-    return {"donuk": {"matched": matched, "unmatched": 0, "file": donuk_output}}
+        donuk_matched = 0
+    
+    return {
+        "tatli": {"matched": tatli_matched, "unmatched": tatli_unmatched, "file": tatli_output},
+        "donuk": {"matched": donuk_matched, "unmatched": 0, "file": donuk_output}
+    }
 
 if __name__ == "__main__":
     import sys
