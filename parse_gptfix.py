@@ -26,9 +26,10 @@ def normalize_text(s) -> str:
     if s is None or (isinstance(s, float) and pd.isna(s)):
         return ""
     s = str(s)
+    # Use ord() to ensure Turkish characters are properly mapped
     tr = str.maketrans({
-        "ı": "i", "ğ": "g", "ş": "s", "ö": "o", "ç": "c", "ü": "u",
-        "İ": "I", "Ğ": "G", "Ş": "S", "Ö": "O", "Ç": "C", "Ü": "U",
+        ord("ı"): "i", ord("ğ"): "g", ord("ş"): "s", ord("ö"): "o", ord("ç"): "c", ord("ü"): "u",
+        ord("İ"): "I", ord("Ğ"): "G", ord("Ş"): "S", ord("Ö"): "O", ord("Ç"): "C", ord("Ü"): "U",
     })
     s = s.translate(tr)
     s = s.upper()
@@ -2598,6 +2599,18 @@ def process_csv(csv_path: str, output_path: str = "sevkiyat_tatlı.xlsx", sheet_
         v = v.replace("TEKLIPAKET", "PAKET").replace("TEKLI PAKET", "PAKET")
         if product_name in ("EKMEK KADAYIFI", "SEKERPARE"):
             return "ADET"
+        
+        # CRITICAL FIX: Handle KL_42_AD format (birim codes from CSV)
+        # These should return ADET, not TEPSI
+        # Format examples: KL_42_AD, KL_72_AD, TP_2,4_KG, AD_1_KG
+        if "_AD" in v or "KL_" in v or "TP_" in v or "KG_" in v or "AD_" in v:
+            # This is a birim code format - check what it indicates
+            if "_AD" in v or v.startswith("AD"):
+                return "ADET"
+            # KL or TP without _AD typically means TEPSI/KOLI
+            if ("KL_" in v or "TP_" in v) and "_AD" not in v:
+                return "TEPSI"
+        
         if "TEPSI" in v or "TEPSİ" in v or re.search(r"\b42\b", v) or re.search(r"1X?42", v):
             return "TEPSI"
         # CSV'den gelen "AD" birimini ADET olarak normalize et
@@ -2677,6 +2690,37 @@ def process_csv(csv_path: str, output_path: str = "sevkiyat_tatlı.xlsx", sheet_
             # This prevents "TAVUK GÖĞSÜ" Excel from matching "TAVUK GÖĞSÜLÜ KAZANDİBİ" CSV
             if not ex_has_kaz and not csv_has_kaz:
                 return True
+        
+        # CRITICAL: KAZANDİBİ variant distinction
+        # Plain "KAZANDİBİ" must NOT match "ANTEP FISTIKLI KAZANDİBİ", "LIGHT KAZANDİBİ", etc.
+        if "KAZANDIBI" in ex_strict and "KAZANDIBI" in csv_strict:
+            # Check if Excel is plain KAZANDIBI (no modifiers)
+            ex_is_plain = (ex_strict == "KAZANDIBI" or 
+                          ex_strict in ("KAZANDIBI142", "KAZANDIBI242", "KAZANDIBIKL42AD") or
+                          ("ANTEP" not in ex_strict and "LIGHT" not in ex_strict and "TAVUK" not in ex_strict))
+            
+            # Check if CSV is plain KAZANDIBI (no modifiers)
+            csv_is_plain = (csv_strict == "KAZANDIBI" or
+                           ("ANTEP" not in csv_strict and "FISTIK" not in csv_strict and 
+                            "LIGHT" not in csv_strict and "TAVUK" not in csv_strict))
+            
+            # Only match if both are plain OR both have the same modifier
+            if ex_is_plain != csv_is_plain:
+                return False
+            
+            # If both are plain, allow match
+            if ex_is_plain and csv_is_plain:
+                return True
+            
+            # If both have modifiers, check if they match
+            if "ANTEP" in ex_strict and "ANTEP" in csv_strict:
+                return True
+            if "LIGHT" in ex_strict and "LIGHT" in csv_strict:
+                return True
+            # TAVUK GÖĞSÜ KAZ already handled above
+            
+            # Different modifiers - don't match
+            return False
         
         # Original special case for TAVUK GÖĞSÜLÜ KAZANDİBİ matching
         if "TAVUKGOGSUKAZ" in ex_strict and "TAVUKGOGSUKAZANDIBI" in csv_strict:
@@ -2861,11 +2905,13 @@ def process_csv(csv_path: str, output_path: str = "sevkiyat_tatlı.xlsx", sheet_
         ana_ad_norm = normalize_text(ana_ad)
         
         # CRITICAL: Check "Birim" column for unit information (e.g., "AD" for ADET)
-        # If no variant found in product name, use unit from Birim column
+        # ONLY use Birim if no variant found in product name itself
+        # This prevents KL_42_AD from overriding "(42 Lİ)" in product name
         if not varyant:
             try:
                 birim_val = str(r.get("Birim", r.get("BIRIM", ""))).strip()
-                if birim_val:
+                # Only use Birim if it's a simple unit code (AD, KG, etc.), not composite codes
+                if birim_val and not any(sep in birim_val for sep in ['_', 'KL', 'TP']):
                     varyant = birim_val
             except:
                 pass
@@ -2897,7 +2943,7 @@ def process_csv(csv_path: str, output_path: str = "sevkiyat_tatlı.xlsx", sheet_
             for csv_var, csv_miktar in csv_index[excel_ad]:
                 if varyant_eslesir(excel_var, csv_var):
                     # EKMEK KADAYIFI ve ŞEKERPARE için "TEPSİ" ekle
-                    if excel_ad in ("EKMEKKADAYIFI", "SEKERPARE"):
+                    if excel_ad in ("EKMEKKADAYIFI", "EKMEK KADAYIFI", "SEKERPARE"):
                         try:
                             fmt_qty = int(csv_miktar) if float(csv_miktar).is_integer() else csv_miktar
                         except:
@@ -2924,7 +2970,7 @@ def process_csv(csv_path: str, output_path: str = "sevkiyat_tatlı.xlsx", sheet_
                     matched += 1
                     yazildi = True
                     break
-                if excel_var == "ADET" and csv_var == "TEPSI" and excel_ad in ("EKMEK KADAYIFI", "SEKERPARE"):
+                if excel_var == "ADET" and csv_var == "TEPSI" and excel_ad in ("EKMEKKADAYIFI", "EKMEK KADAYIFI", "SEKERPARE"):
                     # EKMEK KADAYIFI ve ŞEKERPARE için "TEPSİ" ekle
                     try:
                         fmt_qty = int(csv_miktar) if float(csv_miktar).is_integer() else csv_miktar
@@ -2966,7 +3012,7 @@ def process_csv(csv_path: str, output_path: str = "sevkiyat_tatlı.xlsx", sheet_
                             matched += 1
                             yazildi = True
                             break
-                        if excel_var == "ADET" and csv_var == "TEPSI" and excel_ad in ("EKMEK KADAYIFI", "SEKERPARE"):
+                        if excel_var == "ADET" and csv_var == "TEPSI" and excel_ad in ("EKMEKKADAYIFI", "EKMEK KADAYIFI", "SEKERPARE"):
                             # EKMEK KADAYIFI ve ŞEKERPARE için "TEPSİ" ekle
                             try:
                                 fmt_qty = int(csv_miktar) if float(csv_miktar).is_integer() else csv_miktar
@@ -3155,7 +3201,14 @@ def process_csv(csv_path: str, output_path: str = "sevkiyat_tatlı.xlsx", sheet_
                 adet_val = adet_cell.value
                 if adet_val not in (None, "", "-"):
                     try:
-                        adet_count = float(str(adet_val).replace(",", "."))
+                        # Strip text suffixes like 'ad', 'PKT.', 'TEPSİ' before calculation
+                        adet_str = str(adet_val).replace(",", ".")
+                        # Remove common suffixes (case-insensitive)
+                        for suffix in [" ad", " AD", " PKT.", " PKT", " TEPSİ", " TEPSI"]:
+                            if adet_str.endswith(suffix):
+                                adet_str = adet_str[:-len(suffix)].strip()
+                                break
+                        adet_count = float(adet_str)
                         basket_from_adet = adet_count / division_value
                         total_baskets += basket_from_adet
                     except:
@@ -3166,7 +3219,14 @@ def process_csv(csv_path: str, output_path: str = "sevkiyat_tatlı.xlsx", sheet_
                 adet_val = adet_cell.value
                 if adet_val not in (None, "", "-"):
                     try:
-                        adet_count = float(str(adet_val).replace(",", "."))
+                        # Strip text suffixes like 'ad', 'PKT.', 'TEPSİ' before calculation
+                        adet_str = str(adet_val).replace(",", ".")
+                        # Remove common suffixes (case-insensitive)
+                        for suffix in [" ad", " AD", " PKT.", " PKT", " TEPSİ", " TEPSI"]:
+                            if adet_str.endswith(suffix):
+                                adet_str = adet_str[:-len(suffix)].strip()
+                                break
+                        adet_count = float(adet_str)
                         basket_from_adet = adet_count / division_value
                         total_baskets += basket_from_adet
                     except:
