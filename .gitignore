@@ -61,6 +61,7 @@ fix_update.py
 test_update_system.py
 rename_and_zip.py
 parse_gptfix_local.py
+analysis_*.py
 
 # Test files created during development
 test_*.py
@@ -75,6 +76,8 @@ simple_*.py
 apply_*.py
 temp_*.py
 final_*.py
+compare_*.py
+detailed_*.py
 
 # Icon and packaging helpers
 appicon.ico
@@ -83,5 +86,8 @@ Thumbs.db*.pyc
 last_*.txt
 TODOS.txt
 parse_debug.txt
+show_*.py
+*.txt
+
 
 Desktop.ini

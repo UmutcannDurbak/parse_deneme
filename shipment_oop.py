@@ -517,18 +517,74 @@ class ImprovedLojistikWriter(LojistikTemplateWriter):
         self.ws.cell(row=1, column=col, value=branch_name)
         return col
 
-    def append_text_items(self, branch_name: str, items: Iterable[str]) -> int:
+    def append_text_items(self, branch_name: str, items: Iterable[str], fallback_branch: Optional[str] = None) -> int:
         assert self.ws is not None and self.wb is not None
         
         # Use canonical branch name for better matching
         canonical_branch = self._canonical_branch(branch_name)
+        canonical_fallback = self._canonical_branch(fallback_branch) if fallback_branch else None
         
-        # Find the correct sheet for this branch
+        # Find the correct sheet for this branch (try primary first, then fallback)
         correct_sheet = self._find_sheet_for_branch(canonical_branch)
+        
+        # If primary not found in any sheet and fallback exists, try fallback
+        if correct_sheet == self.ws and canonical_fallback:
+            fallback_sheet = self._find_sheet_for_branch(canonical_fallback)
+            if fallback_sheet != self.ws:
+                correct_sheet = fallback_sheet
+        
         if correct_sheet != self.ws:
             self.ws = correct_sheet
         
-        col = self._find_or_add_branch_col(canonical_branch)
+        # Try to find branch column (first try primary, then fallback if primary not found)
+        col = None
+        try_add_new = False
+        
+        # PASS 1: Try primary branch (exact + partial match)
+        for r in range(1, min(4, self.ws.max_row + 1)):
+            for c in range(1, self.ws.max_column + 1):
+                v = self.ws.cell(row=r, column=c).value
+                if not v:
+                    continue
+                vv = TextNormalizer.up(str(v))
+                branch_up = TextNormalizer.up(canonical_branch)
+                # Exact match
+                if vv == branch_up:
+                    col = c
+                    break
+                # Partial match
+                if branch_up in vv or vv in branch_up:
+                    col = c
+                    break
+            if col:
+                break
+        
+        # PASS 2: If primary not found and fallback exists, try fallback
+        if col is None and canonical_fallback:
+            for r in range(1, min(4, self.ws.max_row + 1)):
+                for c in range(1, self.ws.max_column + 1):
+                    v = self.ws.cell(row=r, column=c).value
+                    if not v:
+                        continue
+                    vv = TextNormalizer.up(str(v))
+                    fallback_up = TextNormalizer.up(canonical_fallback)
+                    # Exact match
+                    if vv == fallback_up:
+                        col = c
+                        break
+                    # Partial match
+                    if fallback_up in vv or vv in fallback_up:
+                        col = c
+                        break
+                if col:
+                    break
+        
+        # PASS 3: If neither found, add new column with fallback (or primary if no fallback)
+        if col is None:
+            col = self.ws.max_column + 1
+            header_name = canonical_fallback or canonical_branch
+            self.ws.cell(row=1, column=col, value=header_name)
+            try_add_new = True
         
         # Find first empty row below header, skipping merged regions
         def in_merge(r: int, c: int):
@@ -631,7 +687,17 @@ class ShipmentCoordinator:
         rdr = CsvOrderReader(csv_path)
         rdr.load()
 
-        def read_branch_from_file(path: str) -> Optional[str]:
+        def read_branch_from_file(path: str) -> Tuple[Optional[str], Optional[str]]:
+            """Extract branch name with primary and fallback like TATLI/DONUK logic.
+            
+            Returns (primary, fallback) where:
+            - primary: Inner part from "OUTER(INNER)" format - should be tried first
+            - fallback: Outer part - use if primary doesn't match
+            
+            Example:
+            - "MANISA(45 PARK AVM)" -> returns ("45 PARK AVM", "MANISA")
+            - "BALÇOVA" -> returns ("BALÇOVA", None)
+            """
             try:
                 with open(path, encoding="utf-8") as f:
                     for line in f:
@@ -639,27 +705,41 @@ class ShipmentCoordinator:
                         # Match "SUBE KODU", "SUBE KODU-ADI", "SUBE ADI", etc.
                         if "SUBE" in up and ("KODU" in up or "ADI" in up):
                             raw = line.split(":", 1)[-1] if ":" in line else line
-                            # e.g. "242 - BALÇOVA" or "187 - ANKARA(KIZILAY)"
+                            # e.g. "242 - BALÇOVA" or "241 - MANISA(45 PARK AVM)"
                             part = raw.split("-", 1)[-1] if "-" in raw else raw
                             part = part.strip()
                             # Remove quotes if present
                             part = part.strip('"').strip("'").strip()
-                            # If parens exist, prefer the inner content (ANKARA(KIZILAY) -> KIZILAY)
+                            
+                            # If parens exist, return (inner, outer) for priority matching
                             import re
-                            m = re.search(r"\(([^)]+)\)", part)
+                            m = re.search(r"^([^(]+)\(([^)]+)\)$", part)
                             if m:
-                                return m.group(1).strip()
-                            # remove trailing DEPO
+                                outer = m.group(1).strip()
+                                inner = m.group(2).strip()
+                                # PRIMARY: inner (parantez içi) - try this first
+                                # FALLBACK: outer (parantez dışı) - try if primary fails
+                                return (inner, outer)
+                            
+                            # No parens - return single value for both
                             if part.upper().endswith(" DEPO"):
                                 part = part[:-5].strip()
-                            return part
+                            return (part, None)
             except Exception:
                 pass
-            return None
+            return (None, None)
 
-        branch_name_raw = read_branch_from_file(csv_path) or rdr.get_branch_name() or "GENEL"
+        # Get both primary and fallback branch names
+        branch_primary_raw, branch_fallback_raw = read_branch_from_file(csv_path)
+        if not branch_primary_raw and not branch_fallback_raw:
+            branch_primary_raw = rdr.get_branch_name() or "GENEL"
+        
         # Apply branch name mapping (e.g., HARMANDALI → EFESUS) for consistency
-        branch_name = BranchDecisionEngine._apply_branch_mapping(branch_name_raw)
+        branch_primary = BranchDecisionEngine._apply_branch_mapping(branch_primary_raw) if branch_primary_raw else None
+        branch_fallback = BranchDecisionEngine._apply_branch_mapping(branch_fallback_raw) if branch_fallback_raw else None
+        
+        # Use primary if available, otherwise fallback
+        branch_name = branch_primary or branch_fallback or "GENEL"
         # Groups mapped as per design doc: SARF MALZEME, KURABIYE, CIKOLATA - HEDIYELIK, ICECEK
         include_keys = ["SARF", "KURABIYE", "CIKOLATA", "HEDIYELIK", "ICECEK", "İCECEK", "İÇECEK"]
         rows = [r for r in rdr.iter_rows() if any(k in TextNormalizer.up(r.grup) for k in include_keys)]
@@ -739,7 +819,10 @@ class ShipmentCoordinator:
         # Use improved lojistik writer
         wr = ImprovedLojistikWriter(output_path, sheet_name=sheet_hint)
         wr.load()
-        count = wr.append_text_items(branch_name, lines)
+        # Pass both primary and fallback for branch matching (like TATLI/DONUK)
+        # Use primary as main branch name, fallback as backup
+        actual_primary = branch_primary or branch_fallback or "GENEL"
+        count = wr.append_text_items(actual_primary, lines, fallback_branch=branch_fallback if branch_primary else None)
         wr.save()
         return (count, 0)
 

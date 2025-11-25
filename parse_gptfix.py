@@ -1300,15 +1300,53 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
                 force_set.add(normalize_text(item))
     forced_hits = []  # collect entries that were forced to donuk handling for reporting
 
-    # Select target worksheet with priority: try primary branch first, then fallback
+    # Select target worksheet with priority logic:
+    # 1. If user specified a day/sheet (sheet_name):
+    #    a) First check if branch exists in that sheet
+    #    b) If not found, search ALL sheets for branch
+    # 2. If no day specified: search all sheets for branch match
     ws = None
     span = None
-    if sheet_name and sheet_name in wb.sheetnames:
-        ws = wb[sheet_name]
+    sheets_to_search = []
+    
+    if sheet_name:
+        # User selected a specific day - try that sheet first
+        if sheet_name in wb.sheetnames:
+            selected_sheet = wb[sheet_name]
+            # PRIORITY 1: Check if branch exists in selected sheet
+            if branch_primary:
+                sp = find_branch_span(selected_sheet, branch_primary)
+                if sp:
+                    ws = selected_sheet
+                    span = sp
+                    if debug:
+                        print(f"[DEBUG] Found PRIMARY branch '{branch_primary}' in selected sheet '{sheet_name}'")
+            
+            if ws is None and branch_fallback:
+                sp = find_branch_span(selected_sheet, branch_fallback)
+                if sp:
+                    ws = selected_sheet
+                    span = sp
+                    if debug:
+                        print(f"[DEBUG] Found FALLBACK branch '{branch_fallback}' in selected sheet '{sheet_name}'")
+            
+            # PRIORITY 2: Branch NOT in selected sheet - search ALL sheets
+            if ws is None:
+                if debug:
+                    print(f"[DEBUG] Branch not found in selected sheet '{sheet_name}', searching all sheets")
+                sheets_to_search = wb.worksheets
+        else:
+            # Sheet name not found - search all sheets
+            sheets_to_search = wb.worksheets
     else:
+        # No sheet specified - search all sheets
+        sheets_to_search = wb.worksheets
+    
+    # Search all sheets if not found in selected sheet
+    if ws is None and sheets_to_search:
         # Try primary branch first (inner part from parens)
         if branch_primary:
-            for w in wb.worksheets:
+            for w in sheets_to_search:
                 sp = find_branch_span(w, branch_primary)
                 if sp:
                     ws = w
@@ -1319,7 +1357,7 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
         
         # If primary failed, try fallback (outer part from parens)
         if ws is None and branch_fallback:
-            for w in wb.worksheets:
+            for w in sheets_to_search:
                 sp = find_branch_span(w, branch_fallback)
                 if sp:
                     ws = w
@@ -1529,6 +1567,8 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
                 "HAMBURGER EKMEĞİ",
                 "EKŞİ MAYALI TOST EKMEĞİ",
                 "ZERDEÇALLI TOST EKMEĞİ",
+                "PATATES",
+                "PATATES (DONUK)",
             ]}
             # Force Tepsi for Baklava products (Cevizli Tahinli, Soğuk Baklava)
             force_tepsi_norm = {normalize_text(x) for x in [
@@ -2261,6 +2301,9 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
         if debug:
             print(f"[DEBUG] + {name} -> fkey={fkey} size={sz} row={row_idx} col={col_idx} qty={qty}")
 
+    # NOTE: Do NOT preserve existing Excel values - always write fresh data from CSV
+    # When same branch CSV is processed again, it should REPLACE old values, not add to them
+    # This is the correct behavior: each CSV represents the complete order for that branch
     rows_to_clear = [r for r in flavor_rows.values() if r and r > header_row]
     cols_to_clear_raw = [c for c in [size_cols.get("35KG"), size_cols.get("350GR"), size_cols.get("150GR")] if c]
     for rr in rows_to_clear:
@@ -2422,7 +2465,7 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
                 if "KUNEFE" in upv or "KÜNEFE" in upv:
                     # CRITICAL: Clean existing cell value to remove old qty/unit before appending new value
                     text_clean = clean_text_from_quantities(val)
-                    unit_text = "KL." if force_koli_all else "SPT."
+                    unit_text = "KL." if force_koli_all else "KL."
                     new_text = append_text_with_space(text_clean, f"{fmt_qty} {unit_text}")
                     try:
                         safe_write(ws, r, c, new_text)
@@ -2491,7 +2534,7 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
                     if "SERBET" in upv or "ŞERBET" in upv:
                         # CRITICAL: Clean existing cell value to remove old qty/unit before appending new value
                         text_clean = clean_text_from_quantities(val)
-                        unit_text = "KL." if force_koli_all else "SPT."
+                        unit_text = "KL." if force_koli_all else "KL."
                         new_text = append_text_with_space(text_clean, f"{fmt_qty} {unit_text}")
                         try:
                             safe_write(ws, r, c, new_text)
