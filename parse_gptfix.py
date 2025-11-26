@@ -207,7 +207,7 @@ def read_branch_from_file(csv_path: str) -> tuple[Optional[str], Optional[str]]:
 
 def master_cell(ws: openpyxl.worksheet.worksheet.Worksheet, r: int, c: int):
     for mr in ws.merged_cells.ranges:
-        min_row, min_col, max_row, max_col = mr.bounds
+        min_col, min_row, max_col, max_row = mr.bounds
         if min_row <= r <= max_row and min_col <= c <= max_col:
             return ws.cell(row=min_row, column=min_col)
     return ws.cell(row=r, column=c)
@@ -297,7 +297,7 @@ def locate_donuk_products_block(ws: openpyxl.worksheet.worksheet.Worksheet, min_
                 try:
                     # Find master cell of this merged range
                     for mr in ws.merged_cells.ranges:
-                        min_row, min_col, max_row, max_col = mr.bounds
+                        min_col, min_row, max_col, max_row = mr.bounds
                         if min_row <= r <= max_row and min_col <= c <= max_col:
                             v = ws.cell(row=min_row, column=min_col).value
                             break
@@ -427,7 +427,8 @@ def find_branch_span(ws: openpyxl.worksheet.worksheet.Worksheet, branch_name: st
     partial_matches = []
     
     for mr in ws.merged_cells.ranges:
-        min_row, min_col, max_row, max_col = mr.bounds
+        # FIX: bounds returns (min_col, min_row, max_col, max_row), not (min_row, min_col, ...)
+        min_col, min_row, max_col, max_row = mr.bounds
         v = ws.cell(row=min_row, column=min_col).value
         if not v:
             continue
@@ -454,7 +455,7 @@ def find_branch_span(ws: openpyxl.worksheet.worksheet.Worksheet, branch_name: st
             if vv == up:  # Exact match
                 # If inside a merge, return the full span
                 for mr in ws.merged_cells.ranges:
-                    min_row, min_col, max_row, max_col = mr.bounds
+                    min_col, min_row, max_col, max_row = mr.bounds
                     if min_row <= r <= max_row and min_col <= c <= max_col:
                         exact_cells.append((min_col, max_col, min_row))
                         break
@@ -462,7 +463,7 @@ def find_branch_span(ws: openpyxl.worksheet.worksheet.Worksheet, branch_name: st
                     exact_cells.append((c, c, r))
             elif up in vv or vv in up:  # Partial match
                 for mr in ws.merged_cells.ranges:
-                    min_row, min_col, max_row, max_col = mr.bounds
+                    min_col, min_row, max_col, max_row = mr.bounds
                     if min_row <= r <= max_row and min_col <= c <= max_col:
                         partial_cells.append((min_col, max_col, min_row))
                         break
@@ -490,6 +491,17 @@ def is_merged_at(ws: openpyxl.worksheet.worksheet.Worksheet, r: int, c: int) -> 
     return None
 
 def resolve_numeric_col(ws: openpyxl.worksheet.worksheet.Worksheet, r: int, c: int, min_c: int, max_c: int) -> int:
+    """Resolve the final column for writing/clearing, handling merged cells.
+    
+    CRITICAL: If merge handling causes the column to shift outside the original cell's
+    immediate merge region AND into a different branch's territory, return the original
+    column to prevent cross-branch data corruption.
+    
+    Example: GÜZELBAHÇE col 8 is in merge F16:I16 (6-9). Merge ends at col 9.
+    Col 10 is URLA's territory. We should NOT shift to col 10.
+    """
+    original_c = c
+    
     # If target cell is part of a merged region whose master is not this column, shift right until outside merge
     merged = is_merged_at(ws, r, c)
     if merged:
@@ -508,6 +520,19 @@ def resolve_numeric_col(ws: openpyxl.worksheet.worksheet.Worksheet, r: int, c: i
         if c >= max_c:
             break
         c += 1
+    
+    # CRITICAL: If we shifted beyond the original merge's boundary, check if we're entering
+    # another branch's territory. If original merge ended before max_c and we're now at a 
+    # column that's part of a different merge (not the original one), return original column
+    # to prevent cross-branch contamination.
+    if c != original_c:
+        original_merge = is_merged_at(ws, r, original_c)
+        final_merge = is_merged_at(ws, r, c)
+        if original_merge and final_merge and original_merge != final_merge:
+            # Shifted into a different merge region - this is likely another branch's cell
+            # Return the original column (it will be handled by the clearing logic)
+            return original_c
+    
     return c
 
 
@@ -591,7 +616,7 @@ def find_size_columns(ws: openpyxl.worksheet.worksheet.Worksheet, min_c: int, ma
                 s = normalize_text(v)
                 def rightmost_if_merged(rr: int, cc: int) -> int:
                     for mr in ws.merged_cells.ranges:
-                        min_row, min_col, max_row, max_col = mr.bounds
+                        min_col, min_row, max_col, max_row = mr.bounds
                         if min_row <= rr <= max_row and min_col <= cc <= max_col:
                             return max_col
                     return cc
@@ -616,7 +641,7 @@ def safe_cell_value(ws: openpyxl.worksheet.worksheet.Worksheet, r: int, c: int):
         # MergedCell - find master cell
         try:
             for mr in ws.merged_cells.ranges:
-                min_row, min_col, max_row, max_col = mr.bounds
+                min_col, min_row, max_col, max_row = mr.bounds
                 if min_row <= r <= max_row and min_col <= c <= max_col:
                     return ws.cell(row=min_row, column=min_col).value
         except Exception:
@@ -916,7 +941,7 @@ def scan_variant_columns(ws: openpyxl.worksheet.worksheet.Worksheet, header_row:
             # rightmost if merged
             def rightmost(rr: int, cc: int) -> int:
                 for mr in ws.merged_cells.ranges:
-                    min_row, min_col, max_row, max_col = mr.bounds
+                    min_col, min_row, max_col, max_row = mr.bounds
                     if min_row <= rr <= max_row and min_col <= cc <= max_col:
                         return max_col
                 return cc
@@ -2301,14 +2326,31 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
         if debug:
             print(f"[DEBUG] + {name} -> fkey={fkey} size={sz} row={row_idx} col={col_idx} qty={qty}")
 
-    # NOTE: Do NOT preserve existing Excel values - always write fresh data from CSV
-    # When same branch CSV is processed again, it should REPLACE old values, not add to them
-    # This is the correct behavior: each CSV represents the complete order for that branch
+    # CRITICAL: Clear ONLY cells within THIS branch's column span (min_c to max_c)
+    # This prevents clearing other branches' data on the same sheet
+    # Example: GÜZELBAHÇE (cols 6-14) should NOT clear URLA (cols 10-18) data
     rows_to_clear = [r for r in flavor_rows.values() if r and r > header_row]
     cols_to_clear_raw = [c for c in [size_cols.get("35KG"), size_cols.get("350GR"), size_cols.get("150GR")] if c]
+    
+    # Filter columns to only those within current branch span
+    cols_in_branch_span = [c for c in cols_to_clear_raw if min_c <= c <= max_c]
+    
+    if debug:
+        print(f"[DEBUG] Clearing cells: rows={rows_to_clear}, cols={cols_in_branch_span} (branch span: {min_c}-{max_c})")
+    
     for rr in rows_to_clear:
-        for cc_raw in cols_to_clear_raw:
+        for cc_raw in cols_in_branch_span:
             cc = resolve_numeric_col(ws, rr, cc_raw, min_c, max_c)
+            
+            if debug:
+                print(f"[DEBUG] Clear loop: rr={rr} cc_raw={cc_raw} -> resolved cc={cc} (span: {min_c}-{max_c})")
+            
+            # Double-check: only clear if column is within branch span
+            if not (min_c <= cc <= max_c):
+                if debug:
+                    print(f"[DEBUG] Skipping clear at r={rr} c={cc} (outside branch span {min_c}-{max_c})")
+                continue
+            
             cell = ws.cell(row=rr, column=cc)
             val = cell.value
             if isinstance(val, (int, float)):

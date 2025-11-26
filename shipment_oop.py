@@ -51,6 +51,10 @@ BRANCH_NAME_MAPPING = {
     "ELYSIUM": "ELAZIG",          # CSV: ELYSIUM → Excel: ELAZIG
     "MEYDAN AVM": "MEYDAN",       # CSV: MEYDAN AVM → Excel: MEYDAN
     "SEYHAN": "ADANA",            # CSV: ADANA(SEYHAN) → Excel: ADANA
+    "EDREMIT": "EDREMIT",         # CSV: BALIKESIR(EDREMIT) → Excel: EDREMIT
+    "EDREMIT GURE": "GURE",       # CSV: BALIKESIR(EDREMIT GÜRE) → Excel: GÜRE
+    "GURE": "GURE",               # CSV: BALIKESIR(GÜRE) → Excel: GÜRE (direct variant)
+    "BAHCELIEVLER": "SIRINEVLER", # CSV: ISTANBUL(BAHCELIEVLER) → Excel: SIRINEVLER
 }
 
 # Birden fazla sevkiyat günü olan şubeler ve hangi Excel sayfalarında bulundukları
@@ -180,12 +184,20 @@ class BranchDecisionEngine:
                 return v
         
         # Check if any mapping key is contained in the branch name
+        # IMPORTANT: Find longest match first to avoid "EDREMIT" matching before "EDREMIT GURE"
+        best_match = None
+        best_match_len = 0
         for csv_name, excel_name in BRANCH_NAME_MAPPING.items():
-            if csv_name in branch_up:
-                return excel_name
+            if csv_name in branch_up and len(csv_name) > best_match_len:
+                best_match = excel_name
+                best_match_len = len(csv_name)
             # normalized containment (handles FORUM AVM vs FORUMAVM etc.)
-            if norm(csv_name) in branch_norm:
-                return excel_name
+            if norm(csv_name) in branch_norm and len(csv_name) > best_match_len:
+                best_match = excel_name
+                best_match_len = len(csv_name)
+        
+        if best_match:
+            return best_match
 
         # Common suffix cleanup (e.g., " AVM") then retry exact/mapping
         if branch_up.endswith(" AVM"):

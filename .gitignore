@@ -78,6 +78,9 @@ temp_*.py
 final_*.py
 compare_*.py
 detailed_*.py
+clear*.py
+manual_*.py
+trace_*.py
 
 # Icon and packaging helpers
 appicon.ico
