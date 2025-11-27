@@ -739,37 +739,71 @@ class ShipmentCoordinator:
             - primary: Inner part from "OUTER(INNER)" format - should be tried first
             - fallback: Outer part - use if primary doesn't match
             
+            Special handling for MARMARIS:
+            - If "MARMARIS" detected, checks "Sipariş Notu" column
+            - Looks for "İÇMELER", "DATÇA", or "MARMARİS" keywords
+            - Returns specific sub-branch based on order note
+            
             Example:
             - "MANISA(45 PARK AVM)" -> returns ("45 PARK AVM", "MANISA")
+            - "MUGLA(MARMARIS)" + "Sipariş Notu: içmeler..." -> returns ("İÇMELER", "MARMARIS")
             - "BALÇOVA" -> returns ("BALÇOVA", None)
             """
+            branch_code = None
+            order_note = None
+            
             try:
                 with open(path, encoding="utf-8") as f:
-                    for line in f:
+                    lines = f.readlines()
+                    
+                    # First pass: Extract branch code
+                    for line in lines:
                         up = TextNormalizer.up(line)
-                        # Match "SUBE KODU", "SUBE KODU-ADI", "SUBE ADI", etc.
                         if "SUBE" in up and ("KODU" in up or "ADI" in up):
                             raw = line.split(":", 1)[-1] if ":" in line else line
-                            # e.g. "242 - BALÇOVA" or "241 - MANISA(45 PARK AVM)"
                             part = raw.split("-", 1)[-1] if "-" in raw else raw
-                            part = part.strip()
-                            # Remove quotes if present
-                            part = part.strip('"').strip("'").strip()
+                            part = part.strip().strip('"').strip("'").strip()
+                            branch_code = part
+                            break
+                    
+                    # Second pass: Check for order note (Sipariş Notu)
+                    for line in lines:
+                        up = TextNormalizer.up(line)
+                        if "SIPARIS" in up and "NOTU" in up:
+                            note_part = line.split(":", 1)[-1] if ":" in line else ""
+                            order_note = note_part.strip()
+                            break
+                    
+                    # Process branch code
+                    if branch_code:
+                        # Check if this is a MARMARIS branch
+                        up_branch = TextNormalizer.up(branch_code)
+                        is_marmaris = "MARMARIS" in up_branch or "MUGLA" in up_branch
+                        
+                        if is_marmaris and order_note:
+                            # Check order note for sub-branch indicators
+                            up_note = TextNormalizer.up(order_note)
                             
-                            # If parens exist, return (inner, outer) for priority matching
-                            import re
-                            m = re.search(r"^([^(]+)\(([^)]+)\)$", part)
-                            if m:
-                                outer = m.group(1).strip()
-                                inner = m.group(2).strip()
-                                # PRIMARY: inner (parantez içi) - try this first
-                                # FALLBACK: outer (parantez dışı) - try if primary fails
-                                return (inner, outer)
-                            
-                            # No parens - return single value for both
-                            if part.upper().endswith(" DEPO"):
-                                part = part[:-5].strip()
-                            return (part, None)
+                            if "ICMELER" in up_note:
+                                return ("İÇMELER", "MARMARIS")
+                            elif "DATCA" in up_note:
+                                return ("DATÇA", "MARMARIS")
+                            elif "MARMARIS" in up_note:
+                                return ("MARMARİS", "MARMARIS")
+                        
+                        # Standard processing for non-Marmaris or when no order note match
+                        import re
+                        m = re.search(r"^([^(]+)\(([^)]+)\)$", branch_code)
+                        if m:
+                            outer = m.group(1).strip()
+                            inner = m.group(2).strip()
+                            return (inner, outer)
+                        
+                        # No parens - return single value
+                        if branch_code.upper().endswith(" DEPO"):
+                            branch_code = branch_code[:-5].strip()
+                        return (branch_code, None)
+                        
             except Exception:
                 pass
             return (None, None)
