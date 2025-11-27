@@ -81,6 +81,7 @@ detailed_*.py
 clear*.py
 manual_*.py
 trace_*.py
+create_*.py
 
 # Icon and packaging helpers
 appicon.ico

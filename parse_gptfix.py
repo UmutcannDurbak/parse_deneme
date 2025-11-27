@@ -474,11 +474,35 @@ def find_branch_span(ws: openpyxl.worksheet.worksheet.Worksheet, branch_name: st
     if exact_cells:
         return exact_cells[0]
     
-    # PASS 3: Fallback to partial matches (for backward compatibility)
+    # PASS 3: Fallback to partial matches with improved scoring
+    # Prefer shorter column names to avoid "FOLKART" matching "FOLKART VEGA"
     if partial_matches:
-        return partial_matches[0]
+        # Score by match quality: prefer shorter Excel column name
+        best_match = None
+        best_excel_len = float('inf')
+        for match in partial_matches:
+            min_col, max_col, min_row = match
+            v = ws.cell(row=min_row, column=min_col).value
+            excel_len = len(normalize_text(v)) if v else 999999
+            if excel_len < best_excel_len:
+                best_excel_len = excel_len
+                best_match = match
+        if best_match:
+            return best_match
+    
     if partial_cells:
-        return partial_cells[0]
+        # Score by match quality: prefer shorter Excel column name
+        best_cell = None
+        best_excel_len = float('inf')
+        for cell in partial_cells:
+            c, _, r = cell
+            v = ws.cell(row=r, column=c).value
+            excel_len = len(normalize_text(v)) if v else 999999
+            if excel_len < best_excel_len:
+                best_excel_len = excel_len
+                best_cell = cell
+        if best_cell:
+            return best_cell
     
     return None
 
@@ -614,18 +638,22 @@ def find_size_columns(ws: openpyxl.worksheet.worksheet.Worksheet, min_c: int, ma
                 if not v:
                     continue
                 s = normalize_text(v)
-                def rightmost_if_merged(rr: int, cc: int) -> int:
+                def master_if_merged(rr: int, cc: int) -> int:
+                    """Return the master (leftmost) column of a merge, or the column itself if not merged.
+                    
+                    This ensures size columns point to writable cells, not merged cell edges.
+                    """
                     for mr in ws.merged_cells.ranges:
                         min_col, min_row, max_col, max_row = mr.bounds
                         if min_row <= rr <= max_row and min_col <= cc <= max_col:
-                            return max_col
+                            return min_col  # Return master (leftmost) column
                     return cc
                 if ("3,5" in s or ("35" in s and "KG" in s)) and sizes["35KG"] is None:
-                    sizes["35KG"] = rightmost_if_merged(r, c)
+                    sizes["35KG"] = master_if_merged(r, c)
                 if ("350" in s and ("GR" in s or "G" in s)) and sizes["350GR"] is None:
-                    sizes["350GR"] = rightmost_if_merged(r, c)
+                    sizes["350GR"] = master_if_merged(r, c)
                 if ("150" in s and ("GR" in s or "G" in s)) and sizes["150GR"] is None:
-                    sizes["150GR"] = rightmost_if_merged(r, c)
+                    sizes["150GR"] = master_if_merged(r, c)
     if row_hint:
         scan_rows(row_hint, row_hint + 3)
     if not all(sizes.values()):

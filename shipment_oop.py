@@ -503,8 +503,12 @@ class ImprovedLojistikWriter(LojistikTemplateWriter):
         
         # PASS 2: Partial match with containment (like Tatli/Donuk logic)
         # This helps ELYSIUM find ELAZIG, MEYDAN find MEYDAN AVM etc.
+        # CRITICAL: Prefer exact substring match length, then prefer SHORTER Excel column name
+        # This prevents "FOLKART" from matching "FOLKART VEGA" when both contain "FOLKART"
         best_c = None
         best_score = 0
+        best_excel_len = float('inf')
+        
         for r in range(1, min(4, self.ws.max_row + 1)):
             for c in range(1, self.ws.max_column + 1):
                 v = self.ws.cell(row=r, column=c).value
@@ -514,11 +518,14 @@ class ImprovedLojistikWriter(LojistikTemplateWriter):
                 
                 # Check substring containment in both directions
                 if up in vv or vv in up:
-                    # Prefer shorter match to avoid FOLKART matching FOLKART VEGA
-                    # when both contain each other
-                    score = min(len(up), len(vv))
-                    if score > best_score:
+                    # Score by match quality:
+                    # 1. Prefer longer CSV branch name match (more specific)
+                    # 2. If tie, prefer shorter Excel column name (avoid "FOLKART VEGA" when looking for "FOLKART")
+                    score = len(up) if up in vv else len(vv)  # How much of the search term matched
+                    
+                    if score > best_score or (score == best_score and len(vv) < best_excel_len):
                         best_score = score
+                        best_excel_len = len(vv)
                         best_c = c
         
         if best_c is not None:
@@ -552,7 +559,7 @@ class ImprovedLojistikWriter(LojistikTemplateWriter):
         col = None
         try_add_new = False
         
-        # PASS 1: Try primary branch (exact + partial match)
+        # PASS 1a: Try primary branch EXACT match
         for r in range(1, min(4, self.ws.max_row + 1)):
             for c in range(1, self.ws.max_column + 1):
                 v = self.ws.cell(row=r, column=c).value
@@ -560,18 +567,31 @@ class ImprovedLojistikWriter(LojistikTemplateWriter):
                     continue
                 vv = TextNormalizer.up(str(v))
                 branch_up = TextNormalizer.up(canonical_branch)
-                # Exact match
                 if vv == branch_up:
-                    col = c
-                    break
-                # Partial match
-                if branch_up in vv or vv in branch_up:
                     col = c
                     break
             if col:
                 break
         
-        # PASS 2: If primary not found and fallback exists, try fallback
+        # PASS 1b: If no exact match, try primary branch PARTIAL match
+        if col is None:
+            best_score = -1
+            best_excel_len = 999999
+            for r in range(1, min(4, self.ws.max_row + 1)):
+                for c in range(1, self.ws.max_column + 1):
+                    v = self.ws.cell(row=r, column=c).value
+                    if not v:
+                        continue
+                    vv = TextNormalizer.up(str(v))
+                    branch_up = TextNormalizer.up(canonical_branch)
+                    if branch_up in vv or vv in branch_up:
+                        score = len(branch_up) if branch_up in vv else len(vv)
+                        if score > best_score or (score == best_score and len(vv) < best_excel_len):
+                            best_score = score
+                            best_excel_len = len(vv)
+                            col = c
+        
+        # PASS 2a: If primary not found and fallback exists, try fallback EXACT match
         if col is None and canonical_fallback:
             for r in range(1, min(4, self.ws.max_row + 1)):
                 for c in range(1, self.ws.max_column + 1):
@@ -580,16 +600,29 @@ class ImprovedLojistikWriter(LojistikTemplateWriter):
                         continue
                     vv = TextNormalizer.up(str(v))
                     fallback_up = TextNormalizer.up(canonical_fallback)
-                    # Exact match
                     if vv == fallback_up:
-                        col = c
-                        break
-                    # Partial match
-                    if fallback_up in vv or vv in fallback_up:
                         col = c
                         break
                 if col:
                     break
+        
+        # PASS 2b: If no exact fallback match, try fallback PARTIAL match
+        if col is None and canonical_fallback:
+            best_score = -1
+            best_excel_len = 999999
+            for r in range(1, min(4, self.ws.max_row + 1)):
+                for c in range(1, self.ws.max_column + 1):
+                    v = self.ws.cell(row=r, column=c).value
+                    if not v:
+                        continue
+                    vv = TextNormalizer.up(str(v))
+                    fallback_up = TextNormalizer.up(canonical_fallback)
+                    if fallback_up in vv or vv in fallback_up:
+                        score = len(fallback_up) if fallback_up in vv else len(vv)
+                        if score > best_score or (score == best_score and len(vv) < best_excel_len):
+                            best_score = score
+                            best_excel_len = len(vv)
+                            col = c
         
         # PASS 3: If neither found, add new column with fallback (or primary if no fallback)
         if col is None:
