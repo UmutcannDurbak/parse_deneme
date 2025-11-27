@@ -26,6 +26,11 @@ Gerekli Python paketleri:
 pip install -r requirements.txt
 ```
 
+## 📚 Dokümantasyon
+
+- [Çoklu Dosya İşleme Kılavuzu](COKLU_DOSYA_KILAVUZU.md)
+- Tek seferde birden fazla CSV dosyasını işleyin!
+
 ## Lisans
 
 Copyright (c) 2025 U.D

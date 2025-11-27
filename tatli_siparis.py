@@ -30,7 +30,7 @@ except ImportError:
 
 # PyInstaller ile build ederken .ico dosyasını eklemeyi unutmayın!
 ICON_PATH = "appicon.ico"
-VERSION = "v1.3.33"
+VERSION = "v1.3.34"
 DEVELOPER = "Developer U.D"
 
 # Güncelleme ayarları
@@ -464,7 +464,7 @@ def show_day_selection_dialog(branch_name, possible_sheets):
     return result[0]
 
 
-def run_process(csv_path, status_label, log_widget, izmir_day_var=None):
+def run_process(csv_path, status_label, log_widget, izmir_day_var=None, show_popup=True):
     try:
         log_lines = []
         def custom_print(*args, **kwargs):
@@ -482,6 +482,10 @@ def run_process(csv_path, status_label, log_widget, izmir_day_var=None):
         coord = ShipmentCoordinator()
         sheet_hint = izmir_day_var.get() if izmir_day_var else None
         sheet_hint = sheet_hint if sheet_hint not in ("", "Seçim yok") else None
+        
+        # Initialize branch_name and csv_filename early for use in messages
+        branch_name = None
+        csv_filename = os.path.basename(csv_path)
         
         # Check if branch requires day selection
         from shipment_oop import BranchDecisionEngine, CsvOrderReader, SHEET_NAME_MAPPING
@@ -520,8 +524,8 @@ def run_process(csv_path, status_label, log_widget, izmir_day_var=None):
                     selected_day = show_day_selection_dialog(branch_name, possible_sheets)
                     
                     if not selected_day:
-                        status_label.config(text="❌ İşlem iptal edildi (gün seçilmedi)")
-                        safe_log_insert(log_widget, "[INFO] Kullanıcı gün seçimini iptal etti.\n")
+                        status_label.config(text=f"❌ İşlem iptal edildi{branch_info} (gün seçilmedi)")
+                        safe_log_insert(log_widget, f"[INFO] Kullanıcı gün seçimini iptal etti{branch_info}.\n")
                         return
                     
                     sheet_hint = selected_day
@@ -533,17 +537,22 @@ def run_process(csv_path, status_label, log_widget, izmir_day_var=None):
         except Exception as e:
             safe_log_insert(log_widget, f"[WARN] Branch kontrolü başarısız: {e}\n")
         
-        status_label.config(text="⏳ Başladı: CSV okunuyor...")
-        safe_log_insert(log_widget, "[INFO] İşlem başladı: CSV okunuyor ve eşleştirilecek.\n")
+        # Prepare branch info message for display
+        branch_info = f" [{branch_name}]" if branch_name else ""
+        
+        status_label.config(text=f"⏳ Başladı{branch_info}: CSV okunuyor...")
+        safe_log_insert(log_widget, f"[INFO] İşlem başladı{branch_info}\n")
+        safe_log_insert(log_widget, f"[INFO] CSV Dosyası: {csv_filename}\n")
+        safe_log_insert(log_widget, f"[INFO] CSV okunuyor ve eşleştirilecek.\n")
         # Aşama: Çalıştır
         try:
-            safe_log_insert(log_widget, "[STEP] Tatlı eşleştirme başlıyor...\n")
+            safe_log_insert(log_widget, f"[STEP] Tatlı eşleştirme başlıyor{branch_info}...\n")
             t_match, t_unmatch = coord.process_tatli(csv_path, output_path="sevkiyat_tatlı.xlsx", sheet_hint=sheet_hint)
-            status_label.config(text=f"⏳ Tatlı tamamlandı: {t_match} yazıldı. Donuk hazırlanıyor...")
-            safe_log_insert(log_widget, "[STEP] Donuk eşleştirme başlıyor...\n")
+            status_label.config(text=f"⏳ Tatlı tamamlandı{branch_info}: {t_match} yazıldı. Donuk hazırlanıyor...")
+            safe_log_insert(log_widget, f"[STEP] Donuk eşleştirme başlıyor{branch_info}...\n")
             d_match, d_unmatch = coord.process_donuk(csv_path, output_path="sevkiyat_donuk.xlsx", sheet_hint=sheet_hint)
-            status_label.config(text=f"⏳ Donuk tamamlandı: {d_match} yazıldı. Lojistik hazırlanıyor...")
-            safe_log_insert(log_widget, "[STEP] Lojistik eşleştirme başlıyor...\n")
+            status_label.config(text=f"⏳ Donuk tamamlandı{branch_info}: {d_match} yazıldı. Lojistik hazırlanıyor...")
+            safe_log_insert(log_widget, f"[STEP] Lojistik eşleştirme başlıyor{branch_info}...\n")
             l_match, l_unmatch = coord.process_lojistik(csv_path, output_path="sevkiyat_lojistik.xlsx", sheet_hint=sheet_hint)
             summary = {
                 "tatli": {"matched": t_match, "unmatched": t_unmatch, "file": "sevkiyat_tatlı.xlsx"},
@@ -560,17 +569,53 @@ def run_process(csv_path, status_label, log_widget, izmir_day_var=None):
         except Exception as e:
             safe_log_insert(log_widget, f"[WARN-W1] Tarih yazılamadı ({summary['tatli']['file']}): {e}\n")
         status_label.config(text=(
-            "✅ İşlem tamamlandı!\n"
+            f"✅ İşlem tamamlandı!{branch_info}\n"
             f"Tatlı: {summary['tatli']['matched']}/{summary['tatli']['file']}  "
             f"Donuk: {summary['donuk']['matched']}/{summary['donuk']['file']}  "
             f"Lojistik: {summary['lojistik']['matched']}/{summary['lojistik']['file']}"
         ))
-        safe_log_insert(log_widget, "[DONE] Tüm eşleştirmeler tamamlandı ve dosyalar kaydedildi.\n")
-        messagebox.showinfo("Başarılı", "Tüm sevkiyat dosyaları oluşturuldu.")
+        safe_log_insert(log_widget, f"[DONE] Tüm eşleştirmeler tamamlandı{branch_info} ve dosyalar kaydedildi.\n")
+        
+        # Enhanced success message with branch info and csv filename
+        success_msg = f"Tüm sevkiyat dosyaları başarıyla oluşturuldu!"
+        if branch_name:
+            success_msg = f"'{branch_name}' şubesi için tüm sevkiyat dosyaları başarıyla oluşturuldu!"
+        
+        success_msg += f"\n\n📄 CSV Dosyası: {csv_filename}"
+        if branch_name:
+            success_msg += f"\n🏢 Şube: {branch_name}"
+        
+        success_msg += f"\n\n📊 Yazılan Ürün Sayısı:\n"
+        success_msg += f"• Tatlı: {summary['tatli']['matched']} ürün\n"
+        success_msg += f"• Donuk: {summary['donuk']['matched']} ürün\n"
+        success_msg += f"• Lojistik: {summary['lojistik']['matched']} ürün"
+        
+        total_items = summary['tatli']['matched'] + summary['donuk']['matched'] + summary['lojistik']['matched']
+        success_msg += f"\n\n✅ Toplam: {total_items} ürün işlendi"
+        
+        # Only show popup if requested (for single file processing)
+        if show_popup:
+            messagebox.showinfo("İşlem Başarılı", success_msg)
     except Exception as e:
-        status_label.config(text=f"❌ Hata: {e}")
+        status_label.config(text=f"❌ Hata{branch_info}: {e}")
         safe_log_insert(log_widget, f"[ERR-E0] Genel hata: {e}\n")
-        messagebox.showerror("Hata", f"Bir hata oluştu:\n{e}")
+        
+        # Enhanced error message with context
+        error_msg = f"Bir hata oluştu:\n\n{e}"
+        try:
+            if 'csv_filename' in locals():
+                error_msg += f"\n\n📄 CSV Dosyası: {csv_filename}"
+            if 'branch_name' in locals() and branch_name:
+                error_msg += f"\n🏢 Şube: {branch_name}"
+        except:
+            pass
+        
+        # Only show error popup if requested (for single file processing)
+        if show_popup:
+            messagebox.showerror("Hata", error_msg)
+        else:
+            # For batch processing, just re-raise to be caught by run_multiple_processes
+            raise
 
 def safe_log_insert(log_widget, message):
     """Safely insert message into log widget (handles disabled state)"""
@@ -580,22 +625,123 @@ def safe_log_insert(log_widget, message):
     log_widget.config(state='disabled')
 
 def select_file(status_label, log_widget, izmir_day_var=None):
-    file_path = filedialog.askopenfilename(filetypes=[("CSV Dosyası", "*.csv")])
-    if file_path:
-        status_label.config(text="İşleniyor...")
+    # Allow multiple file selection
+    file_paths = filedialog.askopenfilenames(filetypes=[("CSV Dosyası", "*.csv")])
+    if file_paths:
+        # Convert tuple to list
+        file_list = list(file_paths)
+        status_label.config(text=f"İşleniyor... ({len(file_list)} dosya)")
         log_widget.config(state='normal')
         log_widget.delete(1.0, tk.END)
         log_widget.config(state='disabled')
-        threading.Thread(target=run_process, args=(file_path, status_label, log_widget, izmir_day_var)).start()
+        # Process multiple files sequentially
+        threading.Thread(target=run_multiple_processes, args=(file_list, status_label, log_widget, izmir_day_var)).start()
+
+def run_multiple_processes(file_paths, status_label, log_widget, izmir_day_var=None):
+    """Process multiple CSV files sequentially"""
+    total_files = len(file_paths)
+    successful = 0
+    failed = 0
+    failed_files = []
+    
+    safe_log_insert(log_widget, f"{'='*80}\n")
+    safe_log_insert(log_widget, f"[INFO] Toplu İşlem Başladı: {total_files} dosya işlenecek\n")
+    safe_log_insert(log_widget, f"{'='*80}\n\n")
+    
+    for idx, file_path in enumerate(file_paths, 1):
+        filename = os.path.basename(file_path)
+        
+        safe_log_insert(log_widget, f"\n{'─'*80}\n")
+        safe_log_insert(log_widget, f"[{idx}/{total_files}] İşleniyor: {filename}\n")
+        safe_log_insert(log_widget, f"{'─'*80}\n")
+        
+        status_label.config(text=f"⏳ İşleniyor [{idx}/{total_files}]: {filename}")
+        
+        try:
+            # Process this file (without showing individual popup)
+            run_process(file_path, status_label, log_widget, izmir_day_var, show_popup=False)
+            successful += 1
+            safe_log_insert(log_widget, f"[{idx}/{total_files}] ✅ Başarılı: {filename}\n\n")
+        except Exception as e:
+            failed += 1
+            failed_files.append((filename, str(e)))
+            safe_log_insert(log_widget, f"[{idx}/{total_files}] ❌ Hata: {filename} - {e}\n\n")
+    
+    # Final summary
+    safe_log_insert(log_widget, f"\n{'='*80}\n")
+    safe_log_insert(log_widget, f"[ÖZET] Toplu İşlem Tamamlandı\n")
+    safe_log_insert(log_widget, f"{'='*80}\n")
+    safe_log_insert(log_widget, f"✅ Başarılı: {successful}/{total_files} dosya\n")
+    if failed > 0:
+        safe_log_insert(log_widget, f"❌ Başarısız: {failed}/{total_files} dosya\n")
+        for fname, error in failed_files:
+            safe_log_insert(log_widget, f"   - {fname}: {error}\n")
+    
+    status_label.config(text=f"✅ Toplu İşlem Tamamlandı: {successful}/{total_files} başarılı")
+    
+    # Show summary popup
+    summary_msg = f"Toplu işlem tamamlandı!\n\n"
+    summary_msg += f"📊 Özet:\n"
+    summary_msg += f"• Toplam: {total_files} dosya\n"
+    summary_msg += f"• Başarılı: {successful} dosya\n"
+    if failed > 0:
+        summary_msg += f"• Başarısız: {failed} dosya\n\n"
+        summary_msg += "❌ Başarısız dosyalar:\n"
+        for fname, _ in failed_files[:5]:  # Show first 5
+            summary_msg += f"  - {fname}\n"
+        if len(failed_files) > 5:
+            summary_msg += f"  ... ve {len(failed_files)-5} dosya daha"
+    
+    if failed == 0:
+        messagebox.showinfo("Toplu İşlem Başarılı", summary_msg)
+    else:
+        messagebox.showwarning("Toplu İşlem Tamamlandı (Bazı Hatalar)", summary_msg)
 
 def on_drop(event, status_label, log_widget):
-    file_path = event.data.strip('{}')
-    if file_path.lower().endswith('.csv'):
-        status_label.config(text="İşleniyor...")
-        log_widget.delete(1.0, tk.END)
-        threading.Thread(target=run_process, args=(file_path, status_label, log_widget)).start()
+    # Handle multiple dropped files (tkinterdnd2 can send multiple files)
+    raw_data = event.data.strip()
+    
+    # Parse multiple file paths (can be space-separated or with {})
+    file_paths = []
+    if '{' in raw_data:
+        # Handle {file1} {file2} format
+        import re
+        file_paths = re.findall(r'\{([^}]+)\}', raw_data)
     else:
-        messagebox.showerror("Hata", "Lütfen bir CSV dosyası bırakın.")
+        # Handle space-separated or single file
+        # Split by spaces but handle paths with spaces
+        parts = raw_data.split()
+        current_path = []
+        for part in parts:
+            current_path.append(part)
+            potential_path = ' '.join(current_path)
+            if os.path.exists(potential_path) and potential_path.lower().endswith('.csv'):
+                file_paths.append(potential_path)
+                current_path = []
+        # If nothing was found, try as single path
+        if not file_paths and raw_data:
+            file_paths = [raw_data]
+    
+    # Filter only CSV files
+    csv_files = [f for f in file_paths if f.lower().endswith('.csv') and os.path.exists(f)]
+    
+    if csv_files:
+        if len(csv_files) == 1:
+            # Single file - use original behavior
+            status_label.config(text="İşleniyor...")
+            log_widget.config(state='normal')
+            log_widget.delete(1.0, tk.END)
+            log_widget.config(state='disabled')
+            threading.Thread(target=run_process, args=(csv_files[0], status_label, log_widget, None)).start()
+        else:
+            # Multiple files - use batch processing
+            status_label.config(text=f"İşleniyor... ({len(csv_files)} dosya)")
+            log_widget.config(state='normal')
+            log_widget.delete(1.0, tk.END)
+            log_widget.config(state='disabled')
+            threading.Thread(target=run_multiple_processes, args=(csv_files, status_label, log_widget, None)).start()
+    else:
+        messagebox.showerror("Hata", "Lütfen geçerli CSV dosyası/dosyaları bırakın.")
 
 
 def open_file(path: str):

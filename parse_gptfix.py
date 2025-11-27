@@ -1512,7 +1512,9 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
         "DANA ASADO",
         "MANTI",  # Plain MANTI (separate from CITIR MANTI)
         "BOYOZ",
-        "PATATES"
+        "PATATES",
+        "EKMEK KADAYIFI",  # Special unit handling for Kayseri-Sivas and Adana
+        "ŞEKERPARE"  # Special unit handling for Kayseri-Sivas and Adana
     ]
     # normalize tokens
     special_norm = [normalize_text(s) for s in special_items]
@@ -1628,8 +1630,31 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
                 "CEVIZLI TAHINLI BAKLAVA",
                 "SOGUK BAKLAVA",
             ]}
+            # Force PKT. for Ekmek Kadayıfı and Şekerpare in Kayseri-Sivas and Adana sheets
+            force_pkt_norm = {normalize_text(x) for x in [
+                "EKMEK KADAYIFI",
+                "ŞEKERPARE",
+            ]}
+            # Force PKT. for specific DONUK products (always use PKT. regardless of sheet)
+            force_pkt_donuk_norm = {normalize_text(x) for x in [
+                "USTANIN KÖFTESİ",
+                "HAMBURGER KÖFTE",
+                "KADAYIFLI ŞİNİTSEL",
+                "ÇITIR TAVUK",
+                "SPAGETTİ ET",
+                "TAVUK BUT",
+                "ACI-TATLI SOSLU TAVUK",
+                "MADALYON BONFİLE",
+                "DANA ASADO",
+            ]}
             if matched_token in force_tepsi_norm:
                 unit_text = "Tepsi"
+            elif matched_token in force_pkt_norm and force_koli_all:
+                # Ekmek Kadayıfı and Şekerpare use PKT. in Kayseri-Sivas and Adana sheets
+                unit_text = "PKT."
+            elif matched_token in force_pkt_donuk_norm:
+                # Specific DONUK products always use PKT.
+                unit_text = "PKT."
             elif matched_token in force_always_kl_norm or force_koli_all:
                 unit_text = "KL."
             else:
@@ -1911,7 +1936,27 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
             try:
                 cell = ws.cell(row=row_idx, column=col_idx)
                 # DONUK text cells: append qty and unit (SEPET by default)
-                unit_text = "KL." if force_koli_all else "SPT."
+                # Check if this product should use PKT. instead of SPT.
+                force_pkt_donuk_products = {
+                    normalize_text(x) for x in [
+                        "USTANIN KÖFTESİ",
+                        "HAMBURGER KÖFTE",
+                        "KADAYIFLI ŞİNİTSEL",
+                        "ÇITIR TAVUK",
+                        "SPAGETTİ ET",
+                        "TAVUK BUT",
+                        "ACI-TATLI SOSLU TAVUK",
+                        "MADALYON BONFİLE",
+                        "DANA ASADO",
+                    ]
+                }
+                product_key_norm = normalize_text(product_key)
+                if product_key_norm in force_pkt_donuk_products:
+                    unit_text = "PKT."
+                elif force_koli_all:
+                    unit_text = "KL."
+                else:
+                    unit_text = "SPT."
                 new_text = append_text_with_space(orig_text, f"{fmt_qty} {unit_text}")
                 
                 # Handle merged cells (use safe_write to reliably handle merges)
@@ -3055,13 +3100,18 @@ def process_csv(csv_path: str, output_path: str = "sevkiyat_tatlı.xlsx", sheet_
         if excel_ad in csv_index:
             for csv_var, csv_miktar in csv_index[excel_ad]:
                 if varyant_eslesir(excel_var, csv_var):
-                    # EKMEK KADAYIFI ve ŞEKERPARE için "TEPSİ" ekle
+                    # EKMEK KADAYIFI ve ŞEKERPARE için "PKT." (Kayseri-Sivas/Adana) veya "TEPSİ" (diğer) ekle
                     if excel_ad in ("EKMEKKADAYIFI", "EKMEK KADAYIFI", "SEKERPARE"):
                         try:
                             fmt_qty = int(csv_miktar) if float(csv_miktar).is_integer() else csv_miktar
                         except:
                             fmt_qty = csv_miktar
-                        ws.cell(row=rr, column=cc).value = f"{fmt_qty} TEPSİ"
+                        # Check if this is Kayseri-Sivas or Adana sheet
+                        ws_title_norm = normalize_text(ws.title if ws else "")
+                        if ("KAYSERI" in ws_title_norm and "SIVAS" in ws_title_norm) or ("ADANA" in ws_title_norm):
+                            ws.cell(row=rr, column=cc).value = f"{fmt_qty} PKT."
+                        else:
+                            ws.cell(row=rr, column=cc).value = f"{fmt_qty} TEPSİ"
                     # KAYMAK için "PKT." ekle
                     elif excel_ad in ("KAYMAK", "KAYMAKTAVA"):
                         try:
@@ -3084,12 +3134,17 @@ def process_csv(csv_path: str, output_path: str = "sevkiyat_tatlı.xlsx", sheet_
                     yazildi = True
                     break
                 if excel_var == "ADET" and csv_var == "TEPSI" and excel_ad in ("EKMEKKADAYIFI", "EKMEK KADAYIFI", "SEKERPARE"):
-                    # EKMEK KADAYIFI ve ŞEKERPARE için "TEPSİ" ekle
+                    # EKMEK KADAYIFI ve ŞEKERPARE için "PKT." (Kayseri-Sivas/Adana) veya "TEPSİ" (diğer) ekle
                     try:
                         fmt_qty = int(csv_miktar) if float(csv_miktar).is_integer() else csv_miktar
                     except:
                         fmt_qty = csv_miktar
-                    ws.cell(row=rr, column=cc).value = f"{fmt_qty} TEPSİ"
+                    # Check if this is Kayseri-Sivas or Adana sheet
+                    ws_title_norm = normalize_text(ws.title if ws else "")
+                    if ("KAYSERI" in ws_title_norm and "SIVAS" in ws_title_norm) or ("ADANA" in ws_title_norm):
+                        ws.cell(row=rr, column=cc).value = f"{fmt_qty} PKT."
+                    else:
+                        ws.cell(row=rr, column=cc).value = f"{fmt_qty} TEPSİ"
                     matched += 1
                     yazildi = True
                     break
@@ -3098,13 +3153,18 @@ def process_csv(csv_path: str, output_path: str = "sevkiyat_tatlı.xlsx", sheet_
                 if tatli_eslesir(excel_ad, csv_name):
                     for csv_var, csv_miktar in entries:
                         if varyant_eslesir(excel_var, csv_var):
-                            # EKMEK KADAYIFI ve ŞEKERPARE için "TEPSİ" ekle (boşluksuz ve boşluklu varyantları destekle)
+                            # EKMEK KADAYIFI ve ŞEKERPARE için "PKT." (Kayseri-Sivas/Adana) veya "TEPSİ" (diğer) ekle
                             if excel_ad in ("EKMEKKADAYIFI", "EKMEK KADAYIFI", "SEKERPARE"):
                                 try:
                                     fmt_qty = int(csv_miktar) if float(csv_miktar).is_integer() else csv_miktar
                                 except:
                                     fmt_qty = csv_miktar
-                                ws.cell(row=rr, column=cc).value = f"{fmt_qty} TEPSİ"
+                                # Check if this is Kayseri-Sivas or Adana sheet
+                                ws_title_norm = normalize_text(ws.title if ws else "")
+                                if ("KAYSERI" in ws_title_norm and "SIVAS" in ws_title_norm) or ("ADANA" in ws_title_norm):
+                                    ws.cell(row=rr, column=cc).value = f"{fmt_qty} PKT."
+                                else:
+                                    ws.cell(row=rr, column=cc).value = f"{fmt_qty} TEPSİ"
                             # KAYMAK için "PKT." ekle
                             elif excel_ad in ("KAYMAK", "KAYMAKTAVA"):
                                 try:
@@ -3126,12 +3186,17 @@ def process_csv(csv_path: str, output_path: str = "sevkiyat_tatlı.xlsx", sheet_
                             yazildi = True
                             break
                         if excel_var == "ADET" and csv_var == "TEPSI" and excel_ad in ("EKMEKKADAYIFI", "EKMEK KADAYIFI", "SEKERPARE"):
-                            # EKMEK KADAYIFI ve ŞEKERPARE için "TEPSİ" ekle
+                            # EKMEK KADAYIFI ve ŞEKERPARE için "PKT." (Kayseri-Sivas/Adana) veya "TEPSİ" (diğer) ekle
                             try:
                                 fmt_qty = int(csv_miktar) if float(csv_miktar).is_integer() else csv_miktar
                             except:
                                 fmt_qty = csv_miktar
-                            ws.cell(row=rr, column=cc).value = f"{fmt_qty} TEPSİ"
+                            # Check if this is Kayseri-Sivas or Adana sheet
+                            ws_title_norm = normalize_text(ws.title if ws else "")
+                            if ("KAYSERI" in ws_title_norm and "SIVAS" in ws_title_norm) or ("ADANA" in ws_title_norm):
+                                ws.cell(row=rr, column=cc).value = f"{fmt_qty} PKT."
+                            else:
+                                ws.cell(row=rr, column=cc).value = f"{fmt_qty} TEPSİ"
                             matched += 1
                             yazildi = True
                             break
@@ -3351,7 +3416,7 @@ def process_csv(csv_path: str, output_path: str = "sevkiyat_tatlı.xlsx", sheet_
         # Write basket count using safe_write (handles merged cells)
         # Only write if there's a positive basket count
         if final_basket_count > 0:
-            safe_write(ws, cols["sepet_row"], cols["sepet_col"], final_basket_count)
+            safe_write(ws, cols["sepet_row"], cols["sepet_col"], str(final_basket_count) + " sepet")
 
     wb.save(output_path)
     return matched, 0
