@@ -1207,6 +1207,9 @@ def map_special_csv_names(name_up: str, debug: bool = False) -> str:
         # Tost bread mappings
         ("TOST EKMEGI TAM BUGDAY EKSI MAYALI", "EKSI MAYALI TOST EKMEGI"),
         ("ZERDECALLI EKMEK EKSI MAYALI", "ZERDECALLI TOST EKMEGI"),
+        
+        # Schnitzel mapping - TODOS Issue #3
+        ("SINITZEL", "KADAYIFLI SINITSEL"),
     ]
 
     # Check for substring matches (order matters!)
@@ -1624,6 +1627,7 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
                 "ZERDEÇALLI TOST EKMEĞİ",
                 "PATATES",
                 "PATATES (DONUK)",
+                "BOYOZ",  # TODOS Issue #5: BOYOZ should always use KOLİ unit
             ]}
             # Force Tepsi for Baklava products (Cevizli Tahinli, Soğuk Baklava)
             force_tepsi_norm = {normalize_text(x) for x in [
@@ -1682,7 +1686,10 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
 
     # Dictionary to collect DONUK product quantities
     donuk_aggreg: Dict[str, float] = {}
-    processed_products = set()
+    # NOTE: DO NOT reset processed_products here! It was populated in simple pass above
+    # and must be preserved to avoid re-processing the same items
+    # processed_products = set()  # REMOVED - keeps simple pass products marked as processed
+    
     # Separate dictionary for MAKARON quantities (keep makaron logic independent from DONUK)
     makaron_aggreg: Dict[str, float] = {}
 

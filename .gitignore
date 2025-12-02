@@ -82,6 +82,7 @@ clear*.py
 manual_*.py
 trace_*.py
 create_*.py
+simulate_*.py
 
 # Icon and packaging helpers
 appicon.ico

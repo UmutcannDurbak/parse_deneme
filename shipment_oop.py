@@ -55,6 +55,9 @@ BRANCH_NAME_MAPPING = {
     "EDREMIT GURE": "GURE",       # CSV: BALIKESIR(EDREMIT GÜRE) → Excel: GÜRE
     "GURE": "GURE",               # CSV: BALIKESIR(GÜRE) → Excel: GÜRE (direct variant)
     "BAHCELIEVLER": "SIRINEVLER", # CSV: ISTANBUL(BAHCELIEVLER) → Excel: SIRINEVLER
+    "AYDIN OPSMALL": "OPSMALL",   # CSV: AYDIN OPSMALL → Excel: OPSMALL (TODOS Issue #6)
+    "POINTBORNOVA": "POINT",      # CSV: IZMIR(POINTBORNOVA) → Excel: POİNT (TODOS Issue #2)
+    "MEYDAN": "MEYDAN AVM",       # CSV: MANISA(MEYDAN) → Excel: MEYDAN AVM (TODOS Issue #4)
 }
 
 # Birden fazla sevkiyat günü olan şubeler ve hangi Excel sayfalarında bulundukları
@@ -555,8 +558,9 @@ class ImprovedLojistikWriter(LojistikTemplateWriter):
         if correct_sheet != self.ws:
             self.ws = correct_sheet
         
-        # Try to find branch column (first try primary, then fallback if primary not found)
+        # Try to find branch column (first try primary, then fallback ONLY if primary not found)
         col = None
+        primary_found = False  # Track if primary was matched
         try_add_new = False
         
         # PASS 1a: Try primary branch EXACT match
@@ -569,6 +573,7 @@ class ImprovedLojistikWriter(LojistikTemplateWriter):
                 branch_up = TextNormalizer.up(canonical_branch)
                 if vv == branch_up:
                     col = c
+                    primary_found = True  # Mark primary as found
                     break
             if col:
                 break
@@ -590,9 +595,11 @@ class ImprovedLojistikWriter(LojistikTemplateWriter):
                             best_score = score
                             best_excel_len = len(vv)
                             col = c
+                            primary_found = True  # Mark primary as found
         
         # PASS 2a: If primary not found and fallback exists, try fallback EXACT match
-        if col is None and canonical_fallback:
+        # CRITICAL FIX: Only try fallback if primary was NOT found
+        if col is None and canonical_fallback and not primary_found:
             for r in range(1, min(4, self.ws.max_row + 1)):
                 for c in range(1, self.ws.max_column + 1):
                     v = self.ws.cell(row=r, column=c).value
@@ -607,7 +614,8 @@ class ImprovedLojistikWriter(LojistikTemplateWriter):
                     break
         
         # PASS 2b: If no exact fallback match, try fallback PARTIAL match
-        if col is None and canonical_fallback:
+        # CRITICAL FIX: Only try fallback if primary was NOT found
+        if col is None and canonical_fallback and not primary_found:
             best_score = -1
             best_excel_len = 999999
             for r in range(1, min(4, self.ws.max_row + 1)):
@@ -820,7 +828,8 @@ class ShipmentCoordinator:
         # Use primary if available, otherwise fallback
         branch_name = branch_primary or branch_fallback or "GENEL"
         # Groups mapped as per design doc: SARF MALZEME, KURABIYE, CIKOLATA - HEDIYELIK, ICECEK
-        include_keys = ["SARF", "KURABIYE", "CIKOLATA", "HEDIYELIK", "ICECEK", "İCECEK", "İÇECEK"]
+        # TODOS Issue #2 and #4: Added BOREK (for Kahvaltı Kolisi) and MUTFAK (for Chia Tortilla)
+        include_keys = ["SARF", "KURABIYE", "CIKOLATA", "HEDIYELIK", "ICECEK", "İCECEK", "İÇECEK", "BOREK", "MUTFAK", "YENI ACILANLAR", "YENI AÇILANLAR"]
         rows = [r for r in rdr.iter_rows() if any(k in TextNormalizer.up(r.grup) for k in include_keys)]
 
         def clean_display(stok: str) -> str:
