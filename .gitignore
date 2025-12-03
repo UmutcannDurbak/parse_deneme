@@ -83,6 +83,8 @@ manual_*.py
 trace_*.py
 create_*.py
 simulate_*.py
+where_*.py
+
 
 # Icon and packaging helpers
 appicon.ico
@@ -93,6 +95,7 @@ TODOS.txt
 parse_debug.txt
 show_*.py
 *.txt
+diagnostic_*
 
 
 Desktop.ini

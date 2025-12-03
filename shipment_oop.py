@@ -828,9 +828,22 @@ class ShipmentCoordinator:
         # Use primary if available, otherwise fallback
         branch_name = branch_primary or branch_fallback or "GENEL"
         # Groups mapped as per design doc: SARF MALZEME, KURABIYE, CIKOLATA - HEDIYELIK, ICECEK
-        # TODOS Issue #2 and #4: Added BOREK (for Kahvaltı Kolisi) and MUTFAK (for Chia Tortilla)
-        include_keys = ["SARF", "KURABIYE", "CIKOLATA", "HEDIYELIK", "ICECEK", "İCECEK", "İÇECEK", "BOREK", "MUTFAK", "YENI ACILANLAR", "YENI AÇILANLAR"]
-        rows = [r for r in rdr.iter_rows() if any(k in TextNormalizer.up(r.grup) for k in include_keys)]
+        # TODOS Issue #2: Added MUTFAK (for Chia Tortilla)
+        # TODOS Issue #4: Removed BOREK group (caused unwanted products); instead use exact name match for KAHVALTI KOLISI
+        include_keys = ["SARF", "KURABIYE", "CIKOLATA", "HEDIYELIK", "ICECEK", "İCECEK", "İÇECEK", "MUTFAK", "YENI ACILANLAR", "YENI AÇILANLAR"]
+        
+        # Filter rows: include by group OR by specific product name (KAHVALTI KOLISI)
+        rows = []
+        for r in rdr.iter_rows():
+            r_up = TextNormalizer.up(r.grup)
+            name_up = TextNormalizer.up(r.stok_kodu)
+            
+            # Check if group matches include_keys
+            if any(k in r_up for k in include_keys):
+                rows.append(r)
+            # Special case: KAHVALTI KOLISI (without adding entire BOREK group)
+            elif "KAHVALTI" in name_up and "KOLISI" in name_up:
+                rows.append(r)
 
         def clean_display(stok: str) -> str:
             import re
