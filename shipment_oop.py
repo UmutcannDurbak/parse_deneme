@@ -828,11 +828,11 @@ class ShipmentCoordinator:
         # Use primary if available, otherwise fallback
         branch_name = branch_primary or branch_fallback or "GENEL"
         # Groups mapped as per design doc: SARF MALZEME, KURABIYE, CIKOLATA - HEDIYELIK, ICECEK
-        # TODOS Issue #2: Added MUTFAK (for Chia Tortilla)
-        # TODOS Issue #4: Removed BOREK group (caused unwanted products); instead use exact name match for KAHVALTI KOLISI
-        include_keys = ["SARF", "KURABIYE", "CIKOLATA", "HEDIYELIK", "ICECEK", "İCECEK", "İÇECEK", "MUTFAK", "YENI ACILANLAR", "YENI AÇILANLAR"]
+        # TODOS Issue #4: Removed BOREK and MUTFAK groups (caused unwanted products); instead use exact name match
+        # Special products: KAHVALTI KOLISI, CHİA TOHUMLU TORTİLLA, KIRMA ZEYTİN, KÖY PEYNİRİ KIZARTMA PEYNİRİ, KETEN HELVA
+        include_keys = ["SARF", "KURABIYE", "CIKOLATA", "HEDIYELIK", "ICECEK", "İCECEK", "İÇECEK", "YENI ACILANLAR", "YENI AÇILANLAR"]
         
-        # Filter rows: include by group OR by specific product name (KAHVALTI KOLISI)
+        # Filter rows: include by group OR by specific product names
         rows = []
         for r in rdr.iter_rows():
             r_up = TextNormalizer.up(r.grup)
@@ -843,6 +843,18 @@ class ShipmentCoordinator:
                 rows.append(r)
             # Special case: KAHVALTI KOLISI (without adding entire BOREK group)
             elif "KAHVALTI" in name_up and "KOLISI" in name_up:
+                rows.append(r)
+            # Special case: CHİA TOHUMLU TORTİLLA (from MUTFAK group)
+            elif "CHIA" in name_up and "TOHUMLU" in name_up and "TORTILLA" in name_up:
+                rows.append(r)
+            # Special case: KIRMA ZEYTİN (from MUTFAK group)
+            elif "KIRMA" in name_up and "ZEYTIN" in name_up:
+                rows.append(r)
+            # Special case: KÖY PEYNİRİ KIZARTMA PEYNİRİ (from MUTFAK group)
+            elif "KÖY" in name_up and "PEYNIR" in name_up and "KIZARTMA" in name_up:
+                rows.append(r)
+            # Special case: KETEN HELVA (from DONDURMA group)
+            elif "KETEN" in name_up and "HELVA" in name_up:
                 rows.append(r)
 
         def clean_display(stok: str) -> str:

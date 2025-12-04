@@ -1210,6 +1210,12 @@ def map_special_csv_names(name_up: str, debug: bool = False) -> str:
         
         # Schnitzel mapping - TODOS Issue #3
         ("SINITZEL", "KADAYIFLI SINITSEL"),
+        
+        # Spaghetti meat mapping - BONFİLE SPAGETTİ (CSV) → SPAGETTİ ET (DONUK)
+        ("BONFILLE SPAGETTI", "SPAGETTI ET"),
+        ("BONIFILE SPAGETTI", "SPAGETTI ET"),
+        ("BONFILLE SPAGHETTI", "SPAGETTI ET"),
+        ("BONIFILE SPAGHETTI", "SPAGETTI ET"),
     ]
 
     # Check for substring matches (order matters!)
@@ -1628,6 +1634,8 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
                 "PATATES",
                 "PATATES (DONUK)",
                 "BOYOZ",  # TODOS Issue #5: BOYOZ should always use KOLİ unit
+                "ÇITIR MANTI",  # TODOS Issue #6: ÇITIR MANTI should use KOLİ unit
+                "MANTI",  # TODOS Issue #6: MANTI should use KOLİ unit
             ]}
             # Force Tepsi for Baklava products (Cevizli Tahinli, Soğuk Baklava)
             force_tepsi_norm = {normalize_text(x) for x in [
@@ -1957,8 +1965,21 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
                         "DANA ASADO",
                     ]
                 }
+                force_always_kl_products = {
+                    normalize_text(x) for x in [
+                        "HAMBURGER EKMEĞİ",
+                        "EKŞİ MAYALI TOST EKMEĞİ",
+                        "ZERDEÇALLI TOST EKMEĞİ",
+                        "PATATES",
+                        "BOYOZ",
+                        "ÇITIR MANTI",  # TODOS Issue #6
+                        "MANTI",  # TODOS Issue #6
+                    ]
+                }
                 product_key_norm = normalize_text(product_key)
-                if product_key_norm in force_pkt_donuk_products:
+                if product_key_norm in force_always_kl_products:
+                    unit_text = "KL."
+                elif product_key_norm in force_pkt_donuk_products:
                     unit_text = "PKT."
                 elif force_koli_all:
                     unit_text = "KL."
