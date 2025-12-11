@@ -418,91 +418,67 @@ def safe_write(ws: openpyxl.worksheet.worksheet.Worksheet, r: int, c: int, value
 
 
 def find_branch_span(ws: openpyxl.worksheet.worksheet.Worksheet, branch_name: str) -> Optional[Tuple[int, int, int]]:
+    """Find branch column span. Returns (min_col, max_col, row)."""
     if not branch_name:
         return None
     up = normalize_text(branch_name)
     
-    # PASS 1: Prefer exact matches in merged ranges (avoids FOLKART matching FOLKART VEGA)
-    exact_matches = []
-    partial_matches = []
+    # Find ALL instances of this branch (not just first)
+    all_matches = []
     
+    # PASS 1: Check merged ranges (exact then partial)
     for mr in ws.merged_cells.ranges:
-        # FIX: bounds returns (min_col, min_row, max_col, max_row), not (min_row, min_col, ...)
         min_col, min_row, max_col, max_row = mr.bounds
         v = ws.cell(row=min_row, column=min_col).value
         if not v:
             continue
         vv = normalize_text(v)
         if vv == up:  # Exact match
-            exact_matches.append((min_col, max_col, min_row))
+            all_matches.append(('exact_merge', min_col, max_col, min_row, min_col))
         elif up in vv or vv in up:  # Partial match
-            partial_matches.append((min_col, max_col, min_row))
+            all_matches.append(('partial_merge', min_col, max_col, min_row, min_col))
     
-    # Return exact match if found
-    if exact_matches:
-        return exact_matches[0]
-    
-    # PASS 2: Scan early rows for exact matches
-    exact_cells = []
-    partial_cells = []
-    
+    # PASS 2: Scan rows for unmerged cells (exact then partial)
     for r in range(1, min(25, ws.max_row) + 1):
         for c in range(1, ws.max_column + 1):
             v = ws.cell(row=r, column=c).value
             if not v:
                 continue
             vv = normalize_text(v)
-            if vv == up:  # Exact match
-                # If inside a merge, return the full span
-                for mr in ws.merged_cells.ranges:
-                    min_col, min_row, max_col, max_row = mr.bounds
-                    if min_row <= r <= max_row and min_col <= c <= max_col:
-                        exact_cells.append((min_col, max_col, min_row))
-                        break
-                else:
-                    exact_cells.append((c, c, r))
-            elif up in vv or vv in up:  # Partial match
-                for mr in ws.merged_cells.ranges:
-                    min_col, min_row, max_col, max_row = mr.bounds
-                    if min_row <= r <= max_row and min_col <= c <= max_col:
-                        partial_cells.append((min_col, max_col, min_row))
-                        break
-                else:
-                    partial_cells.append((c, c, r))
+            
+            # Skip if this cell is already covered by a merge
+            in_merge = False
+            for mr in ws.merged_cells.ranges:
+                min_col, min_row, max_col, max_row = mr.bounds
+                if min_row <= r <= max_row and min_col <= c <= max_col:
+                    in_merge = True
+                    break
+            
+            if not in_merge:
+                if vv == up:  # Exact match
+                    all_matches.append(('exact_cell', c, c, r, c))
+                elif up in vv or vv in up:  # Partial match
+                    all_matches.append(('partial_cell', c, c, r, c))
     
-    # Return exact cell match if found
-    if exact_cells:
-        return exact_cells[0]
-    
-    # PASS 3: Fallback to partial matches with improved scoring
-    # Prefer shorter column names to avoid "FOLKART" matching "FOLKART VEGA"
-    if partial_matches:
-        # Score by match quality: prefer shorter Excel column name
-        best_match = None
-        best_excel_len = float('inf')
-        for match in partial_matches:
-            min_col, max_col, min_row = match
-            v = ws.cell(row=min_row, column=min_col).value
-            excel_len = len(normalize_text(v)) if v else 999999
-            if excel_len < best_excel_len:
-                best_excel_len = excel_len
-                best_match = match
-        if best_match:
-            return best_match
-    
-    if partial_cells:
-        # Score by match quality: prefer shorter Excel column name
-        best_cell = None
-        best_excel_len = float('inf')
-        for cell in partial_cells:
-            c, _, r = cell
-            v = ws.cell(row=r, column=c).value
-            excel_len = len(normalize_text(v)) if v else 999999
-            if excel_len < best_excel_len:
-                best_excel_len = excel_len
-                best_cell = cell
-        if best_cell:
-            return best_cell
+    # Prioritize: exact > partial, merge > cell
+    # For İSTANBUL sheet with multiple branch instances, prefer LATER columns (further right)
+    # This helps find ATAŞEHİR at col 26 instead of col 2, and SİRKECİ at col 30 instead of col 10
+    if all_matches:
+        # Sort by: type priority (exact first), then by starting column (prefer rightmost for duplicates)
+        priority_map = {'exact_merge': 0, 'exact_cell': 1, 'partial_merge': 2, 'partial_cell': 3}
+        all_matches.sort(key=lambda m: (priority_map[m[0]], -m[4]))  # Negative column = prefer rightmost
+        
+        match_type, min_col, max_col, row, _ = all_matches[0]
+        
+        # For İSTANBUL sheet specifically, if we have multiple matches and this is a DONUK branch
+        # (ATAŞEHİR, BALIKESİR, SİRKECİ), prefer the rightmost/latest occurrence
+        if ws.title and 'STANBUL' in ws.title.upper():
+            exact_matches = [m for m in all_matches if 'exact' in m[0]]
+            if len(exact_matches) > 1:
+                # Take the rightmost exact match (highest column number)
+                match_type, min_col, max_col, row, _ = max(exact_matches, key=lambda m: m[4])
+        
+        return (min_col, max_col, row)
     
     return None
 
@@ -1328,6 +1304,23 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
     if not stok_col or not miktar_col:
         raise ValueError("CSV'de 'Stok Kodu' veya 'Miktar' sütunu bulunamadı.")
 
+    # Build set of actual CSV product names (normalized) for validation
+    csv_product_names = set()
+    for _, row in df.iterrows():
+        try:
+            stok_raw = str(row[stok_col]).strip() if stok_col in df.columns else ''
+            if '{' in stok_raw:
+                prod_name = stok_raw.split('{')[0].strip()
+            else:
+                prod_name = stok_raw
+            if prod_name:
+                csv_product_names.add(normalize_text(prod_name))
+        except:
+            pass
+    
+    if debug:
+        print(f"[DEBUG] Loaded {len(csv_product_names)} unique products from CSV")
+
     # Extract branch name from CSV with priority: inner (primary) then outer (fallback)
     branch_primary_raw, branch_fallback_raw = read_branch_from_file(csv_path)
     
@@ -1828,18 +1821,29 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
                     best_match = excel_key
                     break
 
-                # Special case matches
-                if ("HAMBURGER" in up and "HAMBURGER" in excel_clean) or \
-                   ("KOFTE" in up and "KOFTE" in excel_clean) or \
-                   ("KÖFTE" in up and "KÖFTE" in excel_clean) or \
-                   ("SOS" in up and "SOS" in excel_clean) or \
-                   ("TAVUK" in up and "TAVUK" in excel_clean) or \
-                   ("MANTI" in up and "MANTI" in excel_clean) or \
-                   ("BOYOZ" in up and "BOYOZ" in excel_clean):
-                    score = 100 + len(set(up.split()) & set(excel_clean.split()))
-                    if score > best_score:
+                # Special case matches for specific product types
+                # These require BOTH the specific keyword AND must be exact matches for that type
+                if ("HAMBURGER" in up and "HAMBURGER" in excel_clean and "KOFTE" in up and "KOFTE" in excel_clean) or \
+                   ("HAMBURGER" in up and "HAMBURGER" in excel_clean and "KOFTE" in excel_clean and "KÖFTE" in excel_clean):
+                    # HAMBURGER KÖFTE must match exactly
+                    if up == excel_clean:
                         best_match = excel_key
-                        best_score = score
+                        best_score = 200
+                        continue
+                
+                if ("SOS" in up and "SOS" in excel_clean and "TAVUK" in up and "TAVUK" in excel_clean):
+                    # SOSLU TAVUK must match exactly
+                    if up == excel_clean:
+                        best_match = excel_key
+                        best_score = 200
+                        continue
+                
+                if ("MANTI" in up and "MANTI" in excel_clean) or \
+                   ("BOYOZ" in up and "BOYOZ" in excel_clean):
+                    # MANTI and BOYOZ are specific products - match only exact
+                    if up == excel_clean:
+                        best_match = excel_key
+                        best_score = 200
                         continue
 
                 # Partial match - look for shared significant words
@@ -1847,7 +1851,20 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
                 excel_words = set(word for word in excel_clean.split() if len(word) > 2)
                 common_words = name_words & excel_words
                 
+                # CRITICAL FIX: For DONDURMA products, require more strict matching
+                # Don't match "SADE DONDURMA" with "SÜTLÜ DONDURMA" just because they both have "DONDURMA"
                 if common_words:
+                    if "DONDURMA" in common_words:
+                        # For dondurma, require at least 2 common words or exact adjective match
+                        # This prevents "SADE DONDURMA" matching "SÜTLÜ DONDURMA"
+                        dondurma_words = name_words - {"DONDURMA"}  # Get adjectives
+                        excel_dondurma_words = excel_words - {"DONDURMA"}
+                        dondurma_common = dondurma_words & excel_dondurma_words
+                        
+                        if not dondurma_common:
+                            # No matching adjective - skip this match (different dondurma type)
+                            continue
+                    
                     # Enhanced scoring system
                     base_score = len(common_words) * 10
                     length_score = sum(len(word) for word in common_words)
@@ -1875,6 +1892,14 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
                         print(f"[DEBUG] FORCED MATCH: found excel_key='{best_match}' via match_donuk_product for '{name_raw}'")
 
             if best_match:
+                # CRITICAL VALIDATION: Verify this product actually exists in the CSV
+                # This prevents writing quantities for products not in the order
+                # (e.g., DOSİDO row gets quantity when CSV doesn't have DOSİDO)
+                if clean_up not in csv_product_names and not forced_flag:
+                    if debug:
+                        print(f"[DEBUG] SKIPPING '{name_raw}' - not found in CSV product list (Excel match: '{best_match}')")
+                    continue
+                
                 try:
                     qty = float(str(r[miktar_col]).replace(",", "."))
                 except Exception:

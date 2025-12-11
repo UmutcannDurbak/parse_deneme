@@ -96,6 +96,9 @@ parse_debug.txt
 show_*.py
 *.txt
 diagnostic_*
+IST*.md
+repair_*.py
+scan_*.py
 
 
 Desktop.ini
