@@ -418,27 +418,29 @@ def safe_write(ws: openpyxl.worksheet.worksheet.Worksheet, r: int, c: int, value
 
 
 def find_branch_span(ws: openpyxl.worksheet.worksheet.Worksheet, branch_name: str) -> Optional[Tuple[int, int, int]]:
-    """Find branch column span. Returns (min_col, max_col, row)."""
+    """Find branch column span. Returns (min_col, max_col, row).
+    
+    CRITICAL: Only accept EXACT matches for branch names. Substring matching causes
+    false positives (e.g., "52 EVLER" matching random cells with those tokens).
+    """
     if not branch_name:
         return None
     up = normalize_text(branch_name)
     
-    # Find ALL instances of this branch (not just first)
+    # Find ALL instances of this branch (exact matches ONLY)
     all_matches = []
     
-    # PASS 1: Check merged ranges (exact then partial)
+    # PASS 1: Check merged ranges (exact only)
     for mr in ws.merged_cells.ranges:
         min_col, min_row, max_col, max_row = mr.bounds
         v = ws.cell(row=min_row, column=min_col).value
         if not v:
             continue
         vv = normalize_text(v)
-        if vv == up:  # Exact match
+        if vv == up:  # Exact match only
             all_matches.append(('exact_merge', min_col, max_col, min_row, min_col))
-        elif up in vv or vv in up:  # Partial match
-            all_matches.append(('partial_merge', min_col, max_col, min_row, min_col))
     
-    # PASS 2: Scan rows for unmerged cells (exact then partial)
+    # PASS 2: Scan rows for unmerged cells (exact only)
     for r in range(1, min(25, ws.max_row) + 1):
         for c in range(1, ws.max_column + 1):
             v = ws.cell(row=r, column=c).value
@@ -455,28 +457,24 @@ def find_branch_span(ws: openpyxl.worksheet.worksheet.Worksheet, branch_name: st
                     break
             
             if not in_merge:
-                if vv == up:  # Exact match
+                if vv == up:  # Exact match only
                     all_matches.append(('exact_cell', c, c, r, c))
-                elif up in vv or vv in up:  # Partial match
-                    all_matches.append(('partial_cell', c, c, r, c))
     
-    # Prioritize: exact > partial, merge > cell
+    # All matches are now exact. Prioritize: merge > cell
     # For İSTANBUL sheet with multiple branch instances, prefer LATER columns (further right)
     # This helps find ATAŞEHİR at col 26 instead of col 2, and SİRKECİ at col 30 instead of col 10
     if all_matches:
-        # Sort by: type priority (exact first), then by starting column (prefer rightmost for duplicates)
-        priority_map = {'exact_merge': 0, 'exact_cell': 1, 'partial_merge': 2, 'partial_cell': 3}
+        # Sort by: type priority (merge first), then by starting column (prefer rightmost for duplicates)
+        priority_map = {'exact_merge': 0, 'exact_cell': 1}
         all_matches.sort(key=lambda m: (priority_map[m[0]], -m[4]))  # Negative column = prefer rightmost
         
         match_type, min_col, max_col, row, _ = all_matches[0]
         
-        # For İSTANBUL sheet specifically, if we have multiple matches and this is a DONUK branch
-        # (ATAŞEHİR, BALIKESİR, SİRKECİ), prefer the rightmost/latest occurrence
+        # For İSTANBUL sheet specifically, if we have multiple matches, prefer the rightmost
         if ws.title and 'STANBUL' in ws.title.upper():
-            exact_matches = [m for m in all_matches if 'exact' in m[0]]
-            if len(exact_matches) > 1:
-                # Take the rightmost exact match (highest column number)
-                match_type, min_col, max_col, row, _ = max(exact_matches, key=lambda m: m[4])
+            if len(all_matches) > 1:
+                # Take the rightmost match (highest column number)
+                match_type, min_col, max_col, row, _ = max(all_matches, key=lambda m: m[4])
         
         return (min_col, max_col, row)
     
@@ -1374,6 +1372,7 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
                 if sp:
                     ws = selected_sheet
                     span = sp
+                    branch_name = branch_primary  # Update to actually found branch
                     if debug:
                         print(f"[DEBUG] Found PRIMARY branch '{branch_primary}' in selected sheet '{sheet_name}'")
             
@@ -1382,6 +1381,7 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
                 if sp:
                     ws = selected_sheet
                     span = sp
+                    branch_name = branch_fallback  # Update to actually found branch
                     if debug:
                         print(f"[DEBUG] Found FALLBACK branch '{branch_fallback}' in selected sheet '{sheet_name}'")
             
@@ -1406,6 +1406,7 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
                 if sp:
                     ws = w
                     span = sp
+                    branch_name = branch_primary  # Update to actually found branch
                     if debug:
                         print(f"[DEBUG] Matched PRIMARY branch '{branch_primary}' in sheet '{w.title}'")
                     break
@@ -1417,6 +1418,7 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
                 if sp:
                     ws = w
                     span = sp
+                    branch_name = branch_fallback  # Update to actually found branch
                     if debug:
                         print(f"[DEBUG] Matched FALLBACK branch '{branch_fallback}' in sheet '{w.title}'")
                     break

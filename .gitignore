@@ -84,6 +84,7 @@ trace_*.py
 create_*.py
 simulate_*.py
 where_*.py
+search_*.py
 
 
 # Icon and packaging helpers
