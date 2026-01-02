@@ -569,7 +569,7 @@ def clean_text_from_quantities(text: str) -> str:
 
     # Sadece sonuna eklenmiş miktar birimi kalıplarını sil (KOLİ/KOLI dahil)
     # Örnek: 'ÜRÜN ADI 4 SPT.' -> 'ÜRÜN ADI', 'DOSİDO 5 KOLİ' -> 'DOSİDO'
-    qty_unit_pattern = re.compile(r"(\s*[0-9]+(?:[\.,][0-9]+)?\s*(?:SPT\.|KL\.|TEPSI|TEPSİ|KOLİ|KOLI))+$", re.IGNORECASE)
+    qty_unit_pattern = re.compile(r"(\s*[0-9]+(?:[\.,][0-9]+)?\s*(?:SPT\.|KL\.|TEPSI|TEPSİ|KOLİ|KOLI|PKT\.?))+$", re.IGNORECASE)
     t = qty_unit_pattern.sub("", t).rstrip()
 
     return t.strip()
@@ -3372,9 +3372,9 @@ def process_csv(csv_path: str, output_path: str = "sevkiyat_tatlı.xlsx", sheet_
     for cell in ws[2][1:]:  # Skip first column (date)
         if cell.value and str(cell.value).strip():
             sname = normalize_text(cell.value)
-            has_digit = any(char.isdigit() for char in str(cell.value)[:8])
-            # Only process if it looks like a branch name (not a date)
-            if sname and not has_digit:
+            # Only process if it looks like a branch name (not a date): require at least one letter
+            has_alpha = any(char.isalpha() for char in str(cell.value))
+            if sname and has_alpha:
                 subeler[sname] = {
                     "tepsi_col": cell.column,
                     "adet_col": cell.column + 2,  # ADET is 2 columns after TEPSI
