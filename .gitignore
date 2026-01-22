@@ -1,124 +1,105 @@
-# Python# Python# Byte-compiled / optimized / DLL files
-
+# .gitignore for Parse_Deneme
+# Ignore Python bytecode
 __pycache__/
-
-*.py[cod]__pycache__/__pycache__/
-
+*.py[cod]
 *$py.class
 
-*.py[cod]*.py[cod]
+# Virtual environments
+venv/
+env/
+ENV/
+/.venv/
 
 # Distribution / packaging
-
-build/*$py.class*$py.class
-
+build/
 dist/
-
 *.egg-info/
 
-
-
-# PyInstaller# Distribution / packaging# Distribution / packaging
-
-*.spec
-
-build/build/
-
-# Data and Excel files
-
-*.csvdist/dist/
-
-*.xlsx
-
-*.xls*.egg-info/*.egg-info/
-
-
-
-# Executables*.egg
-
-*.exe
-
 # PyInstaller
+*.spec
+*.pyz
+
+# Executables and installers
+*.exe
+*.msi
 
 # Archives
-
-*.zip*.spec# Installer logs
-
+*.zip
+*.tar.gz
+*.tgz
 *.rar
+*.7z
 
-*.7zpip-log.txt
+# Office / data files (don't upload raw user data)
+*.xlsx
+*.xls
+*.csv
 
+# Logs
+*.log
 
-
-# Environment# Data files
-
-venv/
-
-env/*.csv# PyInstaller
-
-.env
-
-*.xlsx*.spec
-
-# IDE
-
-.vscode/*.xlsdist/
-
+# IDEs
+.vscode/
 .idea/
 
-
-
-# Windows
-
-Thumbs.db# Executables# Executables
-
+# OS files
+Thumbs.db
 Desktop.ini
+.DS_Store
 
-*.exe*.exe
+# PyInstaller local files
+localpycs/
 
-# Backup files
+# Build output used by this project
+build/
 
-*.bak
+# Keep gitignore itself tracked
+!.gitignore
 
-*~
-# Archives# Archives and CSVs (do not upload raw data or builds)
+# Local helper scripts / diagnostics (do not commit these)
+fix_update.py
+test_update_system.py
+rename_and_zip.py
+parse_gptfix_local.py
+analysis_*.py
 
-*.zip*.zip
-
-*.rar*.tar.gz
-
-*.7z*.csv
-
-
-
-# Build folders# OS files
-
-build/.DS_Store
-
-dist/Thumbs.db
-
-
-
-# Environment# IDEs
-
-.env.vscode/
-
-venv/.idea/
-
-env/
-
-# Local env
-
-# IDE.env
-
-.vscode/env/
-
-.idea/venv/
-
+# Test files created during development
+test_*.py
+check_*.py
+debug_*.py
+verify_*.py
+analyze_*.py
+auto_*.py
+find_*.py
+quick_*.py
+simple_*.py
+apply_*.py
+temp_*.py
+final_*.py
+compare_*.py
+detailed_*.py
+clear*.py
+manual_*.py
+trace_*.py
+create_*.py
+simulate_*.py
+where_*.py
+search_*.py
 
 
-# Windows# Other
-
+# Icon and packaging helpers
+appicon.ico
+build.bat
 Thumbs.db*.pyc
+last_*.txt
+TODOS.txt
+parse_debug.txt
+show_*.py
+*.txt
+diagnostic_*
+IST*.md
+repair_*.py
+scan_*.py
+
 
 Desktop.ini
