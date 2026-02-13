@@ -1156,16 +1156,16 @@ def clear_donuk_values(path: str) -> int:
                     except:
                         pass
                     
-                    # Case 2b: Pure qty/unit cells like "2 KL.", "5 SPT.", "10 TEPSI", "3 KOLİ"
+                    # Case 2b: Pure qty/unit cells like "2 KL.", "5 SPT.", "10 TEPSI", "3 KOLİ", "4 PAKET"
                     # These should be cleared entirely
-                    if re.match(r'^\s*\d+(?:[\.\,]\d+)?\s*(?:SPT\.|KL\.|TEPSI|TEPSİ|KOLİ|KOLI|PKT\.)\s*$', cell.value, re.IGNORECASE):
+                    if re.match(r'^\s*\d+(?:[\.\,]\d+)?\s*(?:SPT\.|KL\.|TEPSI|TEPSİ|KOLİ|KOLI|PKT\.|PAKET)\s*$', cell.value, re.IGNORECASE):
                         cell.value = None
                         cleared += 1
                         continue
                     
-                    # Case 2c: Text containing qty/unit patterns (including KOLİ for DOSIDO)
+                    # Case 2c: Text containing qty/unit patterns (including KOLİ for DOSIDO and PAKET for GÜLLAÇ)
                     # Check if contains quantity markers
-                    has_qty_unit = re.search(r'\d+\s*(?:SPT\.|KL\.|TEPSI|TEPSİ|KOLİ|KOLI|PKT\.)', cell.value, re.IGNORECASE)
+                    has_qty_unit = re.search(r'\d+\s*(?:SPT\.|KL\.|TEPSI|TEPSİ|KOLİ|KOLI|PKT\.|PAKET)', cell.value, re.IGNORECASE)
                     has_trailing_number = re.search(r'\s+\d+\s*$', cell.value)
                     
                     if has_qty_unit or has_trailing_number:
@@ -1180,9 +1180,9 @@ def clear_donuk_values(path: str) -> int:
                                 cell.value = cleaned
                                 cleared += 1
                         else:
-                            # General case: Remove trailing qty/unit patterns (including KOLİ for DOSIDO)
-                            # Pattern: "KÜNEFE    2 SPT." → "KÜNEFE", "DOSİDO 5 KOLİ" → "DOSİDO"
-                            cleaned = re.sub(r'(\s*[0-9]+(?:[\.\,][0-9]+)?\s*(?:SPT\.|KL\.|TEPSI|TEPSİ|KOLİ|KOLI|PKT\.?))+$', '', cell.value, flags=re.IGNORECASE).strip()
+                            # General case: Remove trailing qty/unit patterns (including KOLİ for DOSIDO and PAKET for GÜLLAÇ)
+                            # Pattern: "KÜNEFE    2 SPT." → "KÜNEFE", "DOSİDO 5 KOLİ" → "DOSİDO", "GÜLLAÇ 3 PAKET" → "GÜLLAÇ"
+                            cleaned = re.sub(r'(\s*[0-9]+(?:[\.\,][0-9]+)?\s*(?:SPT\.|KL\.|TEPSI|TEPSİ|KOLİ|KOLI|PKT\.|PAKET))+$', '', cell.value, flags=re.IGNORECASE).strip()
                             # Also remove bare trailing numbers: "KÜNEFE  5" → "KÜNEFE"
                             cleaned = re.sub(r'\s+\d+\s*$', '', cleaned).strip()
                             

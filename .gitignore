@@ -94,10 +94,14 @@ Thumbs.db*.pyc
 last_*.txt
 TODOS.txt
 parse_debug.txt
+*.docx
 show_*.py
 *.txt
+.vs
+
 diagnostic_*
 IST*.md
+GITHUB_*.md
 repair_*.py
 scan_*.py
 

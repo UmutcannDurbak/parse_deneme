@@ -1103,7 +1103,7 @@ def match_block_entry(name_up: str, blocks: list, desired_group: Optional[str] =
 def find_dondurma_rows(ws: openpyxl.worksheet.worksheet.Worksheet) -> Dict[str, Optional[int]]:
     targets = {"SUTLU": None, "KAKAOLU": None, "ANTEP": None, "KROKAN": None, "KARADUT": None,
                "LIMON": None, "DAMLA": None, "CILEK": None, "LIGHT": None, "BLUE": None,
-               "CARK": None, "DOSIDO": None}
+               "CARK": None, "DOSIDO": None, "GULLAC": None}
     for r in range(1, ws.max_row + 1):
         v = ws.cell(row=r, column=1).value
         if not v:
@@ -1133,6 +1133,8 @@ def find_dondurma_rows(ws: openpyxl.worksheet.worksheet.Worksheet) -> Dict[str, 
             targets["CARK"] = r
         elif ("DOSIDO" in up or "DOSİDO" in up) and targets["DOSIDO"] is None:
             targets["DOSIDO"] = r
+        elif ("GULLAC" in up or "GÜLLAC" in up or "GÜLLAÇ" in up) and targets["GULLAC"] is None:
+            targets["GULLAC"] = r
     return targets
 
 
@@ -1155,6 +1157,7 @@ def flavor_key_from_name(name_up: str) -> str:
         ("CILEK", ["CILEK"]),
         ("CARK", ["CARK", "CARKIFELEK"]),
         ("DOSIDO", ["DOSIDO", "DOSİDO"]),
+        ("GULLAC", ["GULLAC", "GÜLLAC", "GÜLLAÇ"]),
     ]
     for key, needles in tests:
         if any(n in name_up for n in needles):
@@ -2435,8 +2438,8 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
         unit_text = str(r.get("Birim", r.get("BIRIM", "")))
         sz = size_from_stock_or_unit(name, unit_text)
         if not sz:
-            # Special-case DOSIDO: no explicit size, write into 3,5 KG by convention
-            if fkey == "DOSIDO":
+            # Special-case DOSIDO and GULLAC: no explicit size, write into 3,5 KG by convention
+            if fkey == "DOSIDO" or fkey == "GULLAC":
                 sz = "35KG"
             else:
                 continue
@@ -2527,12 +2530,26 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
                 except:
                     pass
                 
+                # Check if this is GULLAC row - write with PAKET suffix
+                is_gullac_row = False
+                try:
+                    gullac_row = flavor_rows.get("GULLAC") if 'flavor_rows' in locals() else None
+                    is_gullac_row = (gullac_row is not None and r_ == gullac_row)
+                except:
+                    pass
+                
                 if is_dosido_row:
                     fmt_v = int(v) if float(v).is_integer() else v
                     out_text = f"{fmt_v} KOLİ"
                     safe_write(ws, r_, cc, out_text)
                     if debug:
                         print(f"[DEBUG] DOSIDO KOLI WRITE r={r_} c={cc} val='{out_text}'")
+                elif is_gullac_row:
+                    fmt_v = int(v) if float(v).is_integer() else v
+                    out_text = f"{fmt_v} PAKET"
+                    safe_write(ws, r_, cc, out_text)
+                    if debug:
+                        print(f"[DEBUG] GULLAC PAKET WRITE r={r_} c={cc} val='{out_text}'")
                 else:
                     safe_write(ws, r_, cc, v)
                     if debug:
@@ -2558,12 +2575,26 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
                     except:
                         pass
                     
+                    # Check if this is GULLAC row - write with PAKET suffix
+                    is_gullac_row = False
+                    try:
+                        gullac_row = flavor_rows.get("GULLAC") if 'flavor_rows' in locals() else None
+                        is_gullac_row = (gullac_row is not None and r_ == gullac_row)
+                    except:
+                        pass
+                    
                     if is_dosido_row:
                         fmt_v = int(v) if float(v).is_integer() else v
                         out_text = f"{fmt_v} KOLİ"
                         safe_write(ws, r_, cc, out_text)
                         if debug:
                             print(f"[DEBUG] DOSIDO KOLI MASTER WRITE r={r_} c={cc} val='{out_text}'")
+                    elif is_gullac_row:
+                        fmt_v = int(v) if float(v).is_integer() else v
+                        out_text = f"{fmt_v} PAKET"
+                        safe_write(ws, r_, cc, out_text)
+                        if debug:
+                            print(f"[DEBUG] GULLAC PAKET MASTER WRITE r={r_} c={cc} val='{out_text}'")
                     else:
                         # Use safe_write to attempt writing into the master cell of the merge
                         safe_write(ws, r_, cc, v)
