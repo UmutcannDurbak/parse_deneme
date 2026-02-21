@@ -36,7 +36,7 @@ DATA_START_ROW = 3
 
 # İzmir Bayi Listesi (kullanıcıdan)
 IZMIR_BRANCHES = [
-    "Mavibahçe", "Forum", "Point", "Folkart", "Efesus", "Gaziemir", "Balçova", "Hatay", "Folkart Vega", "İstasyon"
+    "Mavibahçe", "Forum", "Point", "Folkart", "Efesus", "Gaziemir", "Balçova", "Hatay", "Folkart Vega", "İstasyon", "Bornova"
 ]
 IZMIR_BRANCH_HINTS = [TextNormalizer.up(b) for b in IZMIR_BRANCHES]
 KUŞADASI_HINTS = ["KUSADASI", "KUŞADASI", "AYDIN"]
@@ -58,6 +58,7 @@ BRANCH_NAME_MAPPING = {
     "AYDIN OPSMALL": "OPSMALL",   # CSV: AYDIN OPSMALL → Excel: OPSMALL (TODOS Issue #6)
     "POINTBORNOVA": "POINT",      # CSV: IZMIR(POINTBORNOVA) → Excel: POİNT (TODOS Issue #2)
     "MEYDAN": "MEYDAN AVM",       # CSV: MANISA(MEYDAN) → Excel: MEYDAN AVM (TODOS Issue #4)
+    "BORNOVA MERKEZ:": "BORNOVA", # CSV: IZMIR(BORNOVA MERKEZ) → Excel: BORNOVA (TODOS Issue #5)
 }
 
 # Birden fazla sevkiyat günü olan şubeler ve hangi Excel sayfalarında bulundukları
@@ -73,6 +74,7 @@ MULTI_DAY_BRANCHES = {
     "HATAY": ["SALI İZMİR", "CUMA İZMİR"],
     "FOLKART VEGA": ["SALI İZMİR", "CUMA İZMİR"],
     "KUSADASI": ["KUŞADASI-AYDIN", "KUŞADASI CMERT"],
+    "BORNOVA": ["SALI KARŞIYAKA", "CUMA İZMİR"],  # Point Bornova genellikle bu iki sayfada görünüyor
 }
 
 # Sheet name mapping for user-friendly display
