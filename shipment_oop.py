@@ -74,7 +74,7 @@ MULTI_DAY_BRANCHES = {
     "HATAY": ["SALI İZMİR", "CUMA İZMİR"],
     "FOLKART VEGA": ["SALI İZMİR", "CUMA İZMİR"],
     "KUSADASI": ["KUŞADASI-AYDIN", "KUŞADASI CMERT"],
-    "BORNOVA": ["SALI KARŞIYAKA", "CUMA İZMİR"],  # Point Bornova genellikle bu iki sayfada görünüyor
+    "BORNOVA": ["SALI İZMİR", "KSK CUMARTESİ"],  # Point Bornova genellikle bu iki sayfada görünüyor
 }
 
 # Sheet name mapping for user-friendly display
