@@ -1103,7 +1103,8 @@ def match_block_entry(name_up: str, blocks: list, desired_group: Optional[str] =
 def find_dondurma_rows(ws: openpyxl.worksheet.worksheet.Worksheet) -> Dict[str, Optional[int]]:
     targets = {"SUTLU": None, "KAKAOLU": None, "ANTEP": None, "KROKAN": None, "KARADUT": None,
                "LIMON": None, "DAMLA": None, "CILEK": None, "LIGHT": None, "BLUE": None,
-               "CARK": None, "DOSIDO": None, "GULLAC": None}
+               "CARK": None, "DOSIDO": None, "GULLAC": None,
+               "MATCHA_CILEK": None, "SADE_BASK": None, "YABAN_MERSINI": None}
     for r in range(1, ws.max_row + 1):
         v = ws.cell(row=r, column=1).value
         if not v:
@@ -1135,6 +1136,12 @@ def find_dondurma_rows(ws: openpyxl.worksheet.worksheet.Worksheet) -> Dict[str, 
             targets["DOSIDO"] = r
         elif ("GULLAC" in up or "GÜLLAC" in up or "GÜLLAÇ" in up) and targets["GULLAC"] is None:
             targets["GULLAC"] = r
+        elif ("MATCHA" in up and "CILEK" in up) and targets["MATCHA_CILEK"] is None:
+            targets["MATCHA_CILEK"] = r
+        elif ("SADE" in up and "BASK" in up) and targets["SADE_BASK"] is None:
+            targets["SADE_BASK"] = r
+        elif ("YABAN" in up and ("MERSINI" in up or "MERSIN" in up)) and targets["YABAN_MERSINI"] is None:
+            targets["YABAN_MERSINI"] = r
     return targets
 
 
@@ -1144,7 +1151,15 @@ def flavor_key_from_name(name_up: str) -> str:
         return "BLUE"
     if "LIGHT" in name_up:
         return "LIGHT"
-    if "SADE" in name_up:
+    # Check new BASK CHEESECAKE products before general SADE mapping
+    if "MATCHA" in name_up and "CILEK" in name_up and "BASK" in name_up:
+        return "MATCHA_CILEK"
+    if "SADE" in name_up and "BASK" in name_up and "CHEESECAKE" in name_up:
+        return "SADE_BASK"
+    if "YABAN" in name_up and ("MERSINI" in name_up or "MERSIN" in name_up) and "BASK" in name_up:
+        return "YABAN_MERSINI"
+    # General SADE mapping (for non-BASK products)
+    if "SADE" in name_up and "BASK" not in name_up and "CHEESECAKE" not in name_up:
         return "SUTLU"
     tests = [
         ("SUTLU", ["SUTLU"]),
@@ -1177,13 +1192,19 @@ def map_special_csv_names(name_up: str, debug: bool = False) -> str:
     """
     # Define CSV pattern -> Excel name mappings (order matters - longer patterns first!)
     special_mappings = [
+        # BASK CHEESECAKE mappings - check these first
+        ("MATCHA CILEK BASK CHEESECAKE", "MATCHA CILEK"),
+        ("SADE BASK CHEESECAKE", "SADE BASK"),
+        ("YABAN MERSINI BASK CHEESECAKE", "YABAN MERSINI"),
+        
         # Baklava mappings - MUST check longer pattern first
         ("CEVIZLI TAHINLI SOGUK BAKLAVA", "CEVIZLI TAHINLI BAKLAVA"),
         # Don't map plain SOGUK BAKLAVA - it should stay as is
         
-        # Tost bread mappings
+        # Bread mappings (sourdough and specialty breads)
         ("TOST EKMEGI TAM BUGDAY EKSI MAYALI", "EKSI MAYALI TOST EKMEGI"),
         ("ZERDECALLI EKMEK EKSI MAYALI", "ZERDECALLI TOST EKMEGI"),
+        ("EKSI MAYALI KOY EKMEK", "EKSI MAYALI KOY EKMEGI"),
         
         # Schnitzel mapping - TODOS Issue #3
         ("SINITZEL", "KADAYIFLI SINITSEL"),
@@ -2389,6 +2410,13 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
                         add(row_ekmek, [sub_cols[1]], qty)
                         matched += 1
                         continue
+                    if ("EKMEK" in up or "EKMEGI" in up) and ("EKSI" in up or "MAYALI" in up) and ("KOY" in up or "KÖY" in up):
+                        # Sourdough village bread (EKŞİ MAYALI KÖY EKMEĞİ)
+                        cols = sub_cols[2:4] if len(sub_cols) >= 4 else sub_cols[2:3]
+                        if cols:
+                            add(row_ekmek, cols, qty)
+                            matched += 1
+                            continue
                     if ("KIYMALI" in up or "KIYMA" in up) and ("BORE" in up):
                         cols = sub_cols[2:4] if len(sub_cols) >= 4 else sub_cols[2:3]
                         if cols:
@@ -2398,16 +2426,8 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
 
                 # CHEESECAKE
                 if row_cheese:
-                    if "SEBASTIAN" in up:
-                        add(row_cheese, sub_cols[:2], qty)
-                        matched += 1
-                        continue
-                    if "FRAMBUAZ" in up:
-                        cols = sub_cols[2:4] if len(sub_cols) >= 3 else []
-                        if cols:
-                            add(row_cheese, cols, qty)
-                            matched += 1
-                            continue
+                    # Removed: SAN SEBASTIAN and FRAMBUAZ are no longer supported
+                    pass
 
                 # ÇATAL BÖREK - PATATESLİ ÇATAL discontinued, never write to it
                 if row_catal:
