@@ -252,7 +252,8 @@ def locate_donuk_products_block(ws: openpyxl.worksheet.worksheet.Worksheet, min_
         "HAMBURGER EKMEGI",  # Must be separate from HAMBURGER KOFTE
         "TAVUK BUT",
         "EKSI MAYALI TOST EKMEGI",
-        "ZERDECALLI TOST EKMEGI"
+        "ZERDECALLI TOST EKMEGI",
+        "EKSI MAYALI KOY EKMEGI",
     ]
     
     # CRITICAL FIX: Find DONUK section header first to avoid matching products in wrong sections
@@ -478,6 +479,25 @@ def find_branch_span(ws: openpyxl.worksheet.worksheet.Worksheet, branch_name: st
         
         return (min_col, max_col, row)
     
+    # PASS 3: Relaxed substring matching when exact branch header doesn't match.
+    # This fixes cases such as CSV branch 'İZMİR KEMALPAŞA' while Excel header is 'KEMALPAŞA'.
+    relaxed_matches = []
+    for r in range(1, min(25, ws.max_row) + 1):
+        for c in range(1, ws.max_column + 1):
+            v = ws.cell(row=r, column=c).value
+            if not v:
+                continue
+            vv = normalize_text(v)
+            if not vv:
+                continue
+            # Only allow relaxed match when one normalized name contains the other
+            if vv in up or up in vv:
+                relaxed_matches.append(('relaxed_cell', c, c, r, c, vv))
+    if relaxed_matches:
+        relaxed_matches.sort(key=lambda m: (-len(m[5]), -m[4]))
+        _, min_col, max_col, row, _, _ = relaxed_matches[0]
+        return (min_col, max_col, row)
+
     return None
 
 def is_merged_at(ws: openpyxl.worksheet.worksheet.Worksheet, r: int, c: int) -> Optional[Tuple[int, int, int, int]]:

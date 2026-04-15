@@ -59,6 +59,7 @@ BRANCH_NAME_MAPPING = {
     "POINTBORNOVA": "POINT",      # CSV: IZMIR(POINTBORNOVA) → Excel: POİNT (TODOS Issue #2)
     "MEYDAN": "MEYDAN AVM",       # CSV: MANISA(MEYDAN) → Excel: MEYDAN AVM (TODOS Issue #4)
     "BORNOVA MERKEZ:": "BORNOVA", # CSV: IZMIR(BORNOVA MERKEZ) → Excel: BORNOVA (TODOS Issue #5)
+    "KEMALPAŞA": "KEMERALTI",     # CSV: IZMIR(KEMALPAŞA) → Excel: KEMERALTI (same worksheet)
 }
 
 # Birden fazla sevkiyat günü olan şubeler ve hangi Excel sayfalarında bulundukları
