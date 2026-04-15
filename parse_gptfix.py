@@ -286,26 +286,22 @@ def locate_donuk_products_block(ws: openpyxl.worksheet.worksheet.Worksheet, min_
     if debug:
         print(f"[DEBUG] Scanning for DONUK products in rows {scan_start_row}-{scan_end_row}, cols {min_c}-{max_c}")
     
+    seen_merge_masters = set()
     # Look for products ONLY in branch columns (min_c to max_c)
     for r in range(scan_start_row, scan_end_row):
         for c in range(min_c, max_c + 1):
             try:
                 # Safe cell value access - handle merged cells
-                cell = ws.cell(row=r, column=c)
+                merge = is_merged_at(ws, r, c)
+                if merge:
+                    master_r, master_c, _, _ = merge
+                    if (master_r, master_c) in seen_merge_masters:
+                        continue
+                    seen_merge_masters.add((master_r, master_c))
+                    cell = ws.cell(row=master_r, column=master_c)
+                else:
+                    cell = ws.cell(row=r, column=c)
                 v = cell.value
-            except AttributeError:
-                # MergedCell object - try to get master cell value
-                try:
-                    # Find master cell of this merged range
-                    for mr in ws.merged_cells.ranges:
-                        min_col, min_row, max_col, max_row = mr.bounds
-                        if min_row <= r <= max_row and min_col <= c <= max_col:
-                            v = ws.cell(row=min_row, column=min_col).value
-                            break
-                    else:
-                        v = None
-                except Exception:
-                    v = None
             except Exception:
                 v = None
                 
@@ -339,30 +335,14 @@ def locate_donuk_products_block(ws: openpyxl.worksheet.worksheet.Worksheet, min_
                     if target in res:
                         continue
                     
-                    # CRITICAL FIX: Skip horizontally-merged header cells
-                    # Product labels should be in single cells or vertically-merged cells only.
-                    # Horizontally-merged cells (spanning multiple columns) are typically headers.
-                    merge = is_merged_at(ws, r, c)
-                    if merge:
-                        master_r, master_c, max_merge_r, max_merge_c = merge
-                        # Check if this is a horizontal merge (spans multiple columns)
-                        if max_merge_c > master_c:
-                            # This is a horizontally-merged header cell, skip it
-                            if debug:
-                                print(f"[DEBUG] Skipping horizontally-merged header at r={r} c={c} for '{target}' (merge spans cols {master_c}-{max_merge_c})")
-                            continue
-                        # For vertically-merged cells: Keep the CURRENT row position (r)
-                        # This ensures each product in a vertical list gets its own row number
-                        # even if they share a merged cell horizontally
-                        cell = ws.cell(row=r, column=c)
-                    else:
-                        cell = ws.cell(row=r, column=c)
-                    
                     # Store original text as-is (cleaning will happen during write)
-                    res[target] = (r, c, orig_text)
+                    if merge:
+                        res[target] = (master_r, master_c, orig_text)
+                    else:
+                        res[target] = (r, c, orig_text)
                     
                     if debug:
-                        print(f"[DEBUG] Found DONUK product '{target}' at r={r} c={c} text='{orig_text}'")
+                        print(f"[DEBUG] Found DONUK product '{target}' at r={(master_r if merge else r)} c={(master_c if merge else c)} text='{orig_text}'")
                     
                     matched = True
                     break
@@ -1849,7 +1829,16 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
                 if debug:
                     print(f"[DEBUG] FORCED DONUK candidate detected: '{name_raw}' (force tokens matched)")
 
-            if not (is_donuk_product or is_donuk_group):
+            # Check if this product is in the donuk_map (e.g., after special mapping)
+            # The mapped_name might have extra info like size/qty, so check if any donuk key is in it
+            is_in_donuk_map = False
+            for donuk_key in donuk_map.keys():
+                donuk_key_norm = normalize_text(donuk_key)
+                if donuk_key_norm in normalize_text(mapped_name) or donuk_key_norm in normalize_text(clean_up):
+                    is_in_donuk_map = True
+                    break
+            
+            if not (is_donuk_product or is_donuk_group or is_in_donuk_map):
                 if debug:
                     print(f"[DEBUG] Skipping '{name_raw}' - not a DONUK product/group")
                 continue
@@ -1941,7 +1930,14 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
                 # CRITICAL VALIDATION: Verify this product actually exists in the CSV
                 # This prevents writing quantities for products not in the order
                 # (e.g., DOSİDO row gets quantity when CSV doesn't have DOSİDO)
-                if clean_up not in csv_product_names and not forced_flag:
+                
+                # Clean up name_raw by removing {CODE} part and normalize it to match csv_product_names format
+                clean_up_for_validation = name_raw
+                if '{' in clean_up_for_validation:
+                    clean_up_for_validation = clean_up_for_validation.split('{')[0].strip()
+                clean_up_for_validation = normalize_text(clean_up_for_validation)
+
+                if clean_up_for_validation not in csv_product_names and not forced_flag:
                     if debug:
                         print(f"[DEBUG] SKIPPING '{name_raw}' - not found in CSV product list (Excel match: '{best_match}')")
                     continue
