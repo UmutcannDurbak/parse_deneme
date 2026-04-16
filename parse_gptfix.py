@@ -236,7 +236,7 @@ def locate_donuk_products_block(ws: openpyxl.worksheet.worksheet.Worksheet, min_
 
     # Sections to skip/ignore (keep these to avoid section confusion)
     skip_sections = {
-        "MAKARON", "PASTA", "DONDURMA", "CHEESECAKE", "CATAL", "ÇATAL", 
+        "MAKARON", "PASTA", "DONDURMA", "CATAL", "ÇATAL", 
         "BOREK", "BÖREK", "TATLI", "KUNEFE", "SERBET", "TRILECE"
     }
     
@@ -254,6 +254,10 @@ def locate_donuk_products_block(ws: openpyxl.worksheet.worksheet.Worksheet, min_
         "EKSI MAYALI TOST EKMEGI",
         "ZERDECALLI TOST EKMEGI",
         "EKSI MAYALI KOY EKMEGI",
+        # Cheesecake products
+        "MATCHA CILEK",
+        "YABAN MERSINI", 
+        "SADE BASK",
     ]
     
     # CRITICAL FIX: Find DONUK section header first to avoid matching products in wrong sections
@@ -1192,10 +1196,10 @@ def map_special_csv_names(name_up: str, debug: bool = False) -> str:
     """
     # Define CSV pattern -> Excel name mappings (order matters - longer patterns first!)
     special_mappings = [
-        # BASK CHEESECAKE mappings - check these first
+        # BASK CHEESECAKE mappings - check these first (normalized versions)
         ("MATCHA CILEK BASK CHEESECAKE", "MATCHA CILEK"),
         ("SADE BASK CHEESECAKE", "SADE BASK"),
-        ("YABAN MERSINI BASK CHEESECAKE", "YABAN MERSINI"),
+        ("YABAN MERSINLI BASK CHEESECAKE", "YABAN MERSINLI"),
         
         # Baklava mappings - MUST check longer pattern first
         ("CEVIZLI TAHINLI SOGUK BAKLAVA", "CEVIZLI TAHINLI BAKLAVA"),
@@ -1782,6 +1786,9 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
             except Exception:
                 continue
 
+            # Initialize forced direct cell for this row
+            forced_direct_cell = None
+
             # Normalize name
             up = normalize_text(name_raw)
             clean_up = re.sub(r"[\(\{\}\)]", "", up).strip()
@@ -1838,7 +1845,7 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
                     is_in_donuk_map = True
                     break
             
-            if not (is_donuk_product or is_donuk_group or is_in_donuk_map):
+            if not (is_donuk_product or is_donuk_group or is_in_donuk_map or forced_flag):
                 if debug:
                     print(f"[DEBUG] Skipping '{name_raw}' - not a DONUK product/group")
                 continue
@@ -1926,6 +1933,31 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
                     if debug:
                         print(f"[DEBUG] FORCED MATCH: found excel_key='{best_match}' via match_donuk_product for '{name_raw}'")
 
+            # If still no best_match for forced products, scan worksheet directly for cheesecake products
+            if not best_match and forced_flag:
+                # For cheesecake products, scan the worksheet for matching cells
+                search_text = normalize_text(mapped_name)
+                found_cell = None
+                for rr in range(1, ws.max_row + 1):
+                    for cc in range(max(1, min_c), min(ws.max_column, max_c) + 1):
+                        val = ws.cell(row=rr, column=cc).value
+                        if not val or not isinstance(val, str):
+                            continue
+                        upv = normalize_text(val)
+                        # Check for exact or substring match
+                        if search_text == upv or search_text in upv or upv in search_text:
+                            found_cell = (rr, cc, val)
+                            break
+                    if found_cell:
+                        break
+                
+                if found_cell:
+                    # Create a dummy best_match key for direct writing
+                    best_match = f"FORCED_{clean_up.replace(' ', '_')}"
+                    forced_direct_cell = found_cell
+                    if debug:
+                        print(f"[DEBUG] FORCED DIRECT MATCH: found cell r={found_cell[0]} c={found_cell[1]} val='{found_cell[2]}' for '{name_raw}' -> mapped '{mapped_name}'")
+
             if best_match:
                 # CRITICAL VALIDATION: Verify this product actually exists in the CSV
                 # This prevents writing quantities for products not in the order
@@ -1983,6 +2015,29 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
                 elif "SOSLU" in clean_up and "TAVUK" in clean_up and "MUTFAK" == group_val:
                     donuk_key = "ACI-TATLI SOSLU TAVUK"
                     donuk_aggreg[donuk_key] = donuk_aggreg.get(donuk_key, 0.0) + qty
+                elif forced_direct_cell:
+                    # For forced direct matches (like cheesecake), write directly to the found cell
+                    row_idx, col_idx, orig_text = forced_direct_cell
+                    # Append quantity with appropriate unit
+                    fmt_qty = int(qty) if float(qty).is_integer() else qty
+                    unit_text = "AD"  # Cheesecake uses AD unit
+                    new_text = append_text_with_space(orig_text, f"{fmt_qty} {unit_text}")
+                    try:
+                        safe_write(ws, row_idx, col_idx, new_text)
+                        matched += 1
+                        forced_hits.append({
+                            "csv_name": name_raw,
+                            "normalized": clean_up,
+                            "matched_key": f"DIRECT_{row_idx}_{col_idx}",
+                            "qty": qty,
+                        })
+                        if debug:
+                            print(f"[DEBUG] FORCED DIRECT WRITE r={row_idx} c={col_idx} val='{new_text}' for CSV='{name_raw}' qty={qty}")
+                        continue  # Skip normal aggregation
+                    except Exception as e:
+                        if debug:
+                            print(f"[DEBUG] FORCED DIRECT WRITE ERROR for '{name_raw}' -> {e}")
+                        continue
                 elif best_match:
                     donuk_aggreg[best_match] = donuk_aggreg.get(best_match, 0.0) + qty
                 matched += 1
