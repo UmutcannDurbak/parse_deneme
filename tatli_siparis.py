@@ -30,7 +30,7 @@ except ImportError:
 
 # PyInstaller ile build ederken .ico dosyasını eklemeyi unutmayın!
 ICON_PATH = "appicon.ico"
-VERSION = "v1.3.47"
+VERSION = "v1.3.48"
 DEVELOPER = "Developer U.D"
 
 # Güncelleme ayarları
