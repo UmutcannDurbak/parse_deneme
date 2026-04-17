@@ -105,6 +105,7 @@ IST*.md
 GITHUB_*.md
 repair_*.py
 scan_*.py
+dump_*.py
 
 
 Desktop.ini

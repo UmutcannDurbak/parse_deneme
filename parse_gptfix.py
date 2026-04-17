@@ -254,9 +254,9 @@ def locate_donuk_products_block(ws: openpyxl.worksheet.worksheet.Worksheet, min_
         "EKSI MAYALI TOST EKMEGI",
         "ZERDECALLI TOST EKMEGI",
         "EKSI MAYALI KOY EKMEGI",
-        # Cheesecake products
+        # Cheesecake products (düzeltildi)
         "MATCHA CILEK",
-        "YABAN MERSINI", 
+        "YABAN MERSINLI",
         "SADE BASK",
     ]
     
@@ -411,6 +411,7 @@ def find_branch_span(ws: openpyxl.worksheet.worksheet.Worksheet, branch_name: st
     if not branch_name:
         return None
     up = normalize_text(branch_name)
+    print(f"[DEBUG] Aranan branch_name: '{branch_name}' (normalize: '{up}')")
     
     # Find ALL instances of this branch (exact matches ONLY)
     all_matches = []
@@ -422,17 +423,17 @@ def find_branch_span(ws: openpyxl.worksheet.worksheet.Worksheet, branch_name: st
         if not v:
             continue
         vv = normalize_text(v)
+        print(f"[DEBUG] MergedCell: row={min_row} col={min_col} value='{v}' (normalize: '{vv}')")
         if vv == up:  # Exact match only
             all_matches.append(('exact_merge', min_col, max_col, min_row, min_col))
     
-    # PASS 2: Scan rows for unmerged cells (exact only)
-    for r in range(1, min(25, ws.max_row) + 1):
+    # PASS 2: Scan rows for unmerged cells (exact only) - SATIR ARALIĞI ARTIRILDI
+    for r in range(1, min(60, ws.max_row) + 1):
         for c in range(1, ws.max_column + 1):
             v = ws.cell(row=r, column=c).value
             if not v:
                 continue
             vv = normalize_text(v)
-            
             # Skip if this cell is already covered by a merge
             in_merge = False
             for mr in ws.merged_cells.ranges:
@@ -440,8 +441,8 @@ def find_branch_span(ws: openpyxl.worksheet.worksheet.Worksheet, branch_name: st
                 if min_row <= r <= max_row and min_col <= c <= max_col:
                     in_merge = True
                     break
-            
             if not in_merge:
+                print(f"[DEBUG] Cell: row={r} col={c} value='{v}' (normalize: '{vv}')")
                 if vv == up:  # Exact match only
                     all_matches.append(('exact_cell', c, c, r, c))
     
@@ -466,7 +467,7 @@ def find_branch_span(ws: openpyxl.worksheet.worksheet.Worksheet, branch_name: st
     # PASS 3: Relaxed substring matching when exact branch header doesn't match.
     # This fixes cases such as CSV branch 'İZMİR KEMALPAŞA' while Excel header is 'KEMALPAŞA'.
     relaxed_matches = []
-    for r in range(1, min(25, ws.max_row) + 1):
+    for r in range(1, min(60, ws.max_row) + 1):
         for c in range(1, ws.max_column + 1):
             v = ws.cell(row=r, column=c).value
             if not v:
@@ -1200,6 +1201,7 @@ def map_special_csv_names(name_up: str, debug: bool = False) -> str:
         ("MATCHA CILEK BASK CHEESECAKE", "MATCHA CILEK"),
         ("SADE BASK CHEESECAKE", "SADE BASK"),
         ("YABAN MERSINLI BASK CHEESECAKE", "YABAN MERSINLI"),
+        ("YABAN MERSINLI", "YABAN MERSINLI"),
         
         # Baklava mappings - MUST check longer pattern first
         ("CEVIZLI TAHINLI SOGUK BAKLAVA", "CEVIZLI TAHINLI BAKLAVA"),
@@ -1451,9 +1453,9 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
                         print(f"[DEBUG] Matched FALLBACK branch '{branch_fallback}' in sheet '{w.title}'")
                     break
         
-        # Last resort: use first sheet
+        # Last resort: raise error if branch not found in any worksheet
         if ws is None:
-            ws = wb.worksheets[0]
+            raise ValueError(f"Branch '{branch_guess}' not found in any worksheet of {output_path}!")
     
     # Get span if not already found
     if span is None and branch_guess:
@@ -1513,10 +1515,47 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
     if debug:
         print(f"[DEBUG] Makaron map: {makaron_map}")
 
-    # Locate DONUK products and build product -> (row, col, text) map
+    # ANTALYA branch'ı ve MARMARİS sheet'i için cheesecake başlıklarını 24. satırda 22-28. sütunlarda ara
     donuk_map = locate_donuk_products_block(ws, min_c, max_c, branch_name=branch_name, debug=debug)
-    if debug:
-        print(f"[DEBUG] Donuk products map: {donuk_map}")
+    # --- CHEESECAKE ÜRÜNLERİ İÇİN normalize_text/map_special_csv_names ile SAĞLAM EŞLEŞTİRME ---
+    cheesecake_map = {}
+    for c in range(22, 29):
+        v = ws.cell(row=24, column=c).value
+        if v:
+            up = normalize_text(str(v))
+            cheesecake_map[up] = c
+    cheesecake_keys = {"SADE BASK", "MATCHA CILEK", "YABAN MERSINLI"}
+    for _, row in df.iterrows():
+        stok_raw = str(row[stok_col]).strip() if stok_col in df.columns else ''
+        if '{' in stok_raw:
+            prod_name = stok_raw.split('{')[0].strip()
+        else:
+            prod_name = stok_raw
+        up = normalize_text(prod_name)
+        mapped = map_special_csv_names(up)
+        nmap = normalize_text(mapped)
+        # Sadece cheesecake ürünleri için
+        if nmap in cheesecake_keys:
+            # Excel başlıklarında karşılığı var mı?
+            if nmap in cheesecake_map:
+                c = cheesecake_map[nmap]
+                safe_write(ws, 25, c, row[miktar_col])
+                if debug:
+                    print(f"[DEBUG] Cheesecake miktar yazıldı: {nmap} sütun={c} miktar={row[miktar_col]}")
+                    print(f"[DEBUG] Hemen sonra hücredeki değer: {ws.cell(row=25, column=c).value}")
+
+    # Cheesecake hücrelerini workbook kaydedilmeden hemen önce tekrar oku
+    if debug and cheesecake_map:
+        print("[DEBUG] Kaydetmeden önce cheesecake hücre değerleri:")
+        for nmap, c in cheesecake_map.items():
+            print(f"  {nmap} sütun={c} -> {ws.cell(row=25, column=c).value}")
+
+    # ...existing code...
+    # Save workbook ve çıkıştan hemen önce cheesecake hücrelerini tekrar oku
+    if debug and cheesecake_map:
+        print("[DEBUG] Kaydetmeden hemen önce (final) cheesecake hücre değerleri:")
+        for nmap, c in cheesecake_map.items():
+            print(f"  {nmap} sütun={c} -> {ws.cell(row=25, column=c).value}")
 
     # --- SIMPLE SPECIAL-ITEM PASS -------------------------------------------------
     # For the user's requested list we apply a very simple deterministic match:
@@ -1935,8 +1974,8 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
 
             # If still no best_match for forced products, scan worksheet directly for cheesecake products
             if not best_match and forced_flag:
-                # For cheesecake products, scan the worksheet for matching cells
-                search_text = normalize_text(mapped_name)
+                # For cheesecake products, scan the worksheet for matching cells using the normalized product base
+                search_text = normalize_text(re.sub(r"\d+\s*ADET.*$", "", mapped_name).strip())
                 found_cell = None
                 for rr in range(1, ws.max_row + 1):
                     for cc in range(max(1, min_c), min(ws.max_column, max_c) + 1):
@@ -1944,7 +1983,7 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
                         if not val or not isinstance(val, str):
                             continue
                         upv = normalize_text(val)
-                        # Check for exact or substring match
+                        # Check for exact or substring match against the base product name
                         if search_text == upv or search_text in upv or upv in search_text:
                             found_cell = (rr, cc, val)
                             break
@@ -2016,14 +2055,13 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
                     donuk_key = "ACI-TATLI SOSLU TAVUK"
                     donuk_aggreg[donuk_key] = donuk_aggreg.get(donuk_key, 0.0) + qty
                 elif forced_direct_cell:
-                    # For forced direct matches (like cheesecake), write directly to the found cell
+                    # For forced direct matches (like cheesecake), write quantity to the row below the product name
                     row_idx, col_idx, orig_text = forced_direct_cell
-                    # Append quantity with appropriate unit
                     fmt_qty = int(qty) if float(qty).is_integer() else qty
                     unit_text = "AD"  # Cheesecake uses AD unit
-                    new_text = append_text_with_space(orig_text, f"{fmt_qty} {unit_text}")
+                    new_text = f"{fmt_qty} {unit_text}"
                     try:
-                        safe_write(ws, row_idx, col_idx, new_text)
+                        safe_write(ws, row_idx + 1, col_idx, new_text)
                         matched += 1
                         forced_hits.append({
                             "csv_name": name_raw,
@@ -2032,7 +2070,7 @@ def process_donuk_csv(csv_path: str, output_path: str = "sevkiyat_donuk.xlsx", s
                             "qty": qty,
                         })
                         if debug:
-                            print(f"[DEBUG] FORCED DIRECT WRITE r={row_idx} c={col_idx} val='{new_text}' for CSV='{name_raw}' qty={qty}")
+                            print(f"[DEBUG] FORCED DIRECT WRITE r={row_idx + 1} c={col_idx} val='{new_text}' for CSV='{name_raw}' qty={qty}")
                         continue  # Skip normal aggregation
                     except Exception as e:
                         if debug:
