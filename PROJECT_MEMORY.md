@@ -1,8 +1,8 @@
 # PROJECT_MEMORY.md
 > **Project Name:** Parse Deneme
-> **Last Updated:** 2026-04-22
-> **Current Phase:** Maintenance / Feature Addition
-> **Active Context:** Added new Bask Cheesecake variants, Trileçe quantity shift, and EKŞİ MAYALI KÖY EKMEĞİ support.
+> **Last Updated:** 2026-07-07
+> **Current Phase:** Maintenance / Bug Fixing Completed
+> **Active Context:** Completed robust Kemalpaşa CSV quote-cleaning and fallback encoding fixes. All CSVs verified successfully.
 
 ---
 
@@ -41,6 +41,7 @@
 * **[Karar - 2026-04-22]:** Replaced old cheesecake (SEBASTIAN, FRAMBUAZ) logic with new Bask variants (SADE, MATCHA, YABAN MERSİNLİ).
 * **[Logic Change - 2026-04-22]:** Reverted TRİLEÇE quantity placement to "same cell" as per user clarification.
 * **[Karar - 2026-04-22]:** Added support for "EKŞİ MAYALI KÖY EKMEĞİ". The quantity is written in the same cell as the name with a "KL." unit fixed.
+* **[Karar - 2026-07-07]:** Kemalpaşa CSV parsing bug resolved by implementing line-by-line quote cleaning (stripping outer quotes and un-escaping doubled quotes) and adding cp1254/latin1 encoding fallbacks during raw line reading.
 
 ---
 **OPERATIONAL DIRECTIVE:**

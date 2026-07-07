@@ -15,6 +15,7 @@ build/
 dist/
 safe-list/
 *.egg-info/
+yedek_v1.3.56/
 
 # PyInstaller
 *.spec
@@ -111,6 +112,7 @@ repair_*.py
 scan_*.py
 dump_*.py
 sevkiyat_*.backup
+
 
 
 Desktop.ini

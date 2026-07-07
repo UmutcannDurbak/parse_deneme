@@ -91,10 +91,67 @@ def size_from_stock_or_unit(stock_name: str, unit_text: str) -> Optional[str]:
 # --------------------------- CSV Utilities ---------------------------
 
 def read_csv(csv_path: str) -> pd.DataFrame:
+    # Robust CSV reading that bypasses unmatched double quotes in metadata headers (lines 1-6)
+    # by skipping to the actual column headers starting with '#' (usually line 7).
+    lines = []
     try:
-        return pd.read_csv(csv_path, encoding="utf-8", delimiter=",", header=2)
+        with open(csv_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
     except Exception:
-        return pd.read_csv(csv_path, encoding="utf-8", delimiter=",", header=0)
+        try:
+            with open(csv_path, "r", encoding="cp1254") as f:
+                lines = f.readlines()
+        except Exception:
+            try:
+                with open(csv_path, "r", encoding="latin1") as f:
+                    lines = f.readlines()
+            except Exception:
+                # Fallback to standard pandas read if file reading fails
+                try:
+                    return pd.read_csv(csv_path, encoding="utf-8", delimiter=",", header=2)
+                except Exception:
+                    return pd.read_csv(csv_path, encoding="utf-8", delimiter=",", header=0)
+
+    header_idx = -1
+    for idx, line in enumerate(lines):
+        clean_l = line.lstrip('\ufeff').strip()
+        if clean_l.startswith('#,Stok Kodu') or clean_l.startswith('"#,Stok Kodu'):
+            header_idx = idx
+            break
+            
+    if header_idx == -1:
+        header_idx = 6 # Default to 7th line (0-indexed 6)
+        
+    data_lines = lines[header_idx:]
+    
+    cleaned_data_lines = []
+    for line in data_lines:
+        l_str = line.lstrip('\ufeff').strip()
+        has_trailing_comma = False
+        if l_str.endswith(','):
+            l_str = l_str[:-1].strip()
+            has_trailing_comma = True
+            
+        if l_str.startswith('"') and l_str.endswith('"'):
+            l_str = l_str[1:-1]
+            l_str = l_str.replace('""', '"')
+            
+        if has_trailing_comma:
+            cleaned_data_lines.append(l_str + ",\n")
+        else:
+            cleaned_data_lines.append(l_str + "\n")
+            
+    import io
+    content = "".join(cleaned_data_lines)
+    
+    try:
+        return pd.read_csv(io.StringIO(content), delimiter=",", header=0)
+    except Exception:
+        # Fallback to standard pandas read
+        try:
+            return pd.read_csv(csv_path, encoding="utf-8", delimiter=",", header=2)
+        except Exception:
+            return pd.read_csv(csv_path, encoding="utf-8", delimiter=",", header=0)
 
 
 def find_col(df: pd.DataFrame, candidates: Iterable[str]) -> Optional[str]:
@@ -138,67 +195,79 @@ def read_branch_from_file(csv_path: str) -> tuple[Optional[str], Optional[str]]:
     order_note = None
     
     try:
-        with open(csv_path, encoding="utf-8") as f:
-            lines = f.readlines()
+        lines = []
+        try:
+            with open(csv_path, encoding="utf-8") as f:
+                lines = f.readlines()
+        except Exception:
+            try:
+                with open(csv_path, encoding="cp1254") as f:
+                    lines = f.readlines()
+            except Exception:
+                try:
+                    with open(csv_path, encoding="latin1") as f:
+                        lines = f.readlines()
+                except Exception:
+                    pass
             
-            # First pass: Extract branch code
-            for line in lines:
-                up = normalize_text(line)
-                if "SUBE" in up and ("KODU" in up or "ADI" in up):
-                    # Extract part after colon
-                    part = line.split(":", 1)[-1] if ":" in line else line
-                    part = part.strip()
-                    # Remove quotes if present
-                    part = part.strip('"').strip("'").strip()
-                    # Split by dash and take the part after it
-                    if "-" in part:
-                        part = part.split("-", 1)[-1]
-                    part = part.strip()
-                    branch_code = part
-                    break
+        # First pass: Extract branch code
+        for line in lines:
+            up = normalize_text(line)
+            if "SUBE" in up and ("KODU" in up or "ADI" in up):
+                # Extract part after colon
+                part = line.split(":", 1)[-1] if ":" in line else line
+                part = part.strip()
+                # Remove quotes if present
+                part = part.strip('"').strip("'").strip()
+                # Split by dash and take the part after it
+                if "-" in part:
+                    part = part.split("-", 1)[-1]
+                part = part.strip()
+                branch_code = part
+                break
+        
+        # Second pass: Check for order note (Sipariş Notu)
+        for line in lines:
+            up = normalize_text(line)
+            if "SIPARIS" in up and "NOTU" in up:
+                # Extract part after colon
+                note_part = line.split(":", 1)[-1] if ":" in line else ""
+                order_note = note_part.strip()
+                break
+        
+        # Process branch code
+        if branch_code:
+            # Check if this is a MARMARIS branch
+            up_branch = normalize_text(branch_code)
+            is_marmaris = "MARMARIS" in up_branch or "MUGLA" in up_branch
             
-            # Second pass: Check for order note (Sipariş Notu)
-            for line in lines:
-                up = normalize_text(line)
-                if "SIPARIS" in up and "NOTU" in up:
-                    # Extract part after colon
-                    note_part = line.split(":", 1)[-1] if ":" in line else ""
-                    order_note = note_part.strip()
-                    break
+            if is_marmaris and order_note:
+                # Check order note for sub-branch indicators
+                up_note = normalize_text(order_note)
+                
+                if "ICMELER" in up_note:
+                    return ("İÇMELER", "MARMARIS")
+                elif "DATCA" in up_note:
+                    return ("DATÇA", "MARMARIS")
+                elif "MARMARIS" in up_note:
+                    # If note explicitly mentions MARMARIS, use it as primary
+                    return ("MARMARİS", "MARMARIS")
             
-            # Process branch code
-            if branch_code:
-                # Check if this is a MARMARIS branch
-                up_branch = normalize_text(branch_code)
-                is_marmaris = "MARMARIS" in up_branch or "MUGLA" in up_branch
-                
-                if is_marmaris and order_note:
-                    # Check order note for sub-branch indicators
-                    up_note = normalize_text(order_note)
-                    
-                    if "ICMELER" in up_note:
-                        return ("İÇMELER", "MARMARIS")
-                    elif "DATCA" in up_note:
-                        return ("DATÇA", "MARMARIS")
-                    elif "MARMARIS" in up_note:
-                        # If note explicitly mentions MARMARIS, use it as primary
-                        return ("MARMARİS", "MARMARIS")
-                
-                # Standard processing for non-Marmaris or when no order note match
-                # If parens exist, return (inner, outer) for priority matching
-                m = re.search(r"^([^(]+)\(([^)]+)\)$", branch_code)
-                if m:
-                    outer = m.group(1).strip()
-                    inner = m.group(2).strip()
-                    # PRIMARY: inner (parantez içi) - try this first
-                    # FALLBACK: outer (parantez dışı) - try if primary fails
-                    return (inner, outer)
-                
-                # No parens - return single value for both
-                if branch_code.upper().endswith(" DEPO"):
-                    branch_code = branch_code[:-5].strip()
-                return (branch_code, None)
-                
+            # Standard processing for non-Marmaris or when no order note match
+            # If parens exist, return (inner, outer) for priority matching
+            m = re.search(r"^([^(]+)\(([^)]+)\)$", branch_code)
+            if m:
+                outer = m.group(1).strip()
+                inner = m.group(2).strip()
+                # PRIMARY: inner (parantez içi) - try this first
+                # FALLBACK: outer (parantez dışı) - try if primary fails
+                return (inner, outer)
+            
+            # No parens - return single value for both
+            if branch_code.upper().endswith(" DEPO"):
+                branch_code = branch_code[:-5].strip()
+            return (branch_code, None)
+            
     except Exception:
         pass
     return (None, None)
@@ -3006,11 +3075,7 @@ def process_csv(csv_path: str, output_path: str = "sevkiyat_tatlı.xlsx", sheet_
             return csv_v in ("", "ADET")
         return excel_v == csv_v
 
-    # CSV oku (eski davranışla uyumlu header toleransı)
-    try:
-        df = pd.read_csv(csv_path, encoding="utf-8", delimiter=",", header=2)
-    except Exception:
-        df = pd.read_csv(csv_path, encoding="utf-8", delimiter=",", header=0)
+    df = read_csv(csv_path)
 
     stok_col = find_col(df, ["STOK KODU", "STOKKODU", "KOD"]) or "STOK KODU"
     miktar_col = find_col(df, ["MIKTAR", "MİKTAR", "ADET"]) or "MIKTAR"
